@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -6,6 +7,8 @@ namespace AutomationTool;
 public sealed class MacroPlayer : IDisposable
 {
     private readonly Random _random = new();
+    private readonly Dictionary<RecordedMouseButton, Point> _pressedButtonPositions = new();
+    private readonly HashSet<RecordedMouseButton> _movedWhilePressed = new();
     private CancellationTokenSource? _cts;
 
     public bool IsPlaying { get; private set; }
@@ -25,6 +28,8 @@ public sealed class MacroPlayer : IDisposable
         try
         {
             long previous = 0;
+            _pressedButtonPositions.Clear();
+            _movedWhilePressed.Clear();
             foreach (var macroEvent in macro.Events.OrderBy(e => e.TimeOffsetMs))
             {
                 token.ThrowIfCancellationRequested();
@@ -75,14 +80,31 @@ public sealed class MacroPlayer : IDisposable
         {
             case MacroEventKind.MouseMove:
                 MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                foreach (var button in _pressedButtonPositions.Keys)
+                {
+                    _movedWhilePressed.Add(button);
+                }
                 break;
             case MacroEventKind.MouseDown:
-                MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                var downPoint = MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                _pressedButtonPositions[macroEvent.Button] = downPoint;
+                _movedWhilePressed.Remove(macroEvent.Button);
                 SendMouseButton(macroEvent.Button, true);
                 break;
             case MacroEventKind.MouseUp:
-                MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                if (_pressedButtonPositions.TryGetValue(macroEvent.Button, out var downPosition)
+                    && !_movedWhilePressed.Contains(macroEvent.Button))
+                {
+                    MoveMouseExact(downPosition.X, downPosition.Y);
+                }
+                else
+                {
+                    MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                }
+
                 SendMouseButton(macroEvent.Button, false);
+                _pressedButtonPositions.Remove(macroEvent.Button);
+                _movedWhilePressed.Remove(macroEvent.Button);
                 break;
             case MacroEventKind.MouseWheel:
                 MoveMouse(macroEvent.X, macroEvent.Y, noise);
@@ -97,7 +119,7 @@ public sealed class MacroPlayer : IDisposable
         }
     }
 
-    private void MoveMouse(int x, int y, NoiseSettings noise)
+    private Point MoveMouse(int x, int y, NoiseSettings noise)
     {
         if (noise.CoordinateJitterPx > 0)
         {
@@ -105,6 +127,12 @@ public sealed class MacroPlayer : IDisposable
             y += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
         }
 
+        MoveMouseExact(x, y);
+        return new Point(x, y);
+    }
+
+    private static void MoveMouseExact(int x, int y)
+    {
         var left = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
         var top = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
         var width = Math.Max(1, NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN));
