@@ -25,6 +25,7 @@ public partial class Form1 : Form
     private NumericUpDown _timeNoiseBox = null!;
     private NumericUpDown _accelNoiseBox = null!;
     private NumericUpDown _trajectoryNoiseBox = null!;
+    private NumericUpDown _previewPathCountBox = null!;
     private NumericUpDown _playbackSpeedBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
     private SplitContainer _mainSplit = null!;
@@ -166,8 +167,8 @@ public partial class Form1 : Form
         };
         settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 290));
         settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
         _rightSplit.Panel1.Controls.Add(settingsPanel);
 
         var macroGroup = CreateGroup("マクロ");
@@ -222,25 +223,31 @@ public partial class Form1 : Form
             Minimum = 0,
             Maximum = 20,
             Value = 2
-        }, 22, 118);
+        }, 18, 118);
         AddLabeledControl(noiseGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 5
-        }, 54, 118);
+        }, 46, 118);
         AddLabeledControl(noiseGroup, "軌道ブレ(px)", _trajectoryNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 80,
             Value = 16
-        }, 86, 118);
+        }, 74, 118);
         AddLabeledControl(noiseGroup, "加速度(%)", _accelNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 12
-        }, 112, 118);
+        }, 102, 118);
+        AddLabeledControl(noiseGroup, "プレビュー数", _previewPathCountBox = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 10,
+            Value = 3
+        }, 130, 118);
 
         _summaryLabel = new Label
         {
@@ -278,8 +285,8 @@ public partial class Form1 : Form
 
         if (_rightSplit is not null && _rightSplit.Height > 0)
         {
-            const int desiredTop = 310;
-            const int desiredTopMin = 300;
+            const int desiredTop = 360;
+            const int desiredTopMin = 350;
             const int desiredBottomMin = 160;
             var maxDistance = _rightSplit.Height - desiredBottomMin - _rightSplit.SplitterWidth;
             if (maxDistance >= desiredTopMin)
@@ -410,7 +417,7 @@ public partial class Form1 : Form
             AccelerationJitterPercent = (int)_accelNoiseBox.Value,
             TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
         };
-        using var overlay = new PreviewOverlayForm(macro, noise);
+        using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value);
         overlay.ShowDialog(this);
     }
 

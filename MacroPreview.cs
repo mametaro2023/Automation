@@ -6,9 +6,9 @@ namespace AutomationTool;
 public sealed class MacroPreview
 {
     public List<Point> PerfectPath { get; } = new();
-    public List<Point> NoisyPath { get; } = new();
+    public List<List<Point>> NoisyPaths { get; } = new();
     public List<PreviewMarker> PerfectMarkers { get; } = new();
-    public List<PreviewMarker> NoisyMarkers { get; } = new();
+    public List<List<PreviewMarker>> NoisyMarkers { get; } = new();
 }
 
 public sealed class PreviewMarker
@@ -20,12 +20,41 @@ public sealed class PreviewMarker
 
 public static class MacroPreviewBuilder
 {
-    public static MacroPreview Build(Macro macro, NoiseSettings noise)
+    public static MacroPreview Build(Macro macro, NoiseSettings noise, int variantCount)
     {
         var preview = new MacroPreview();
         var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
-        var random = new Random(macro.Id.GetHashCode());
+        var count = Math.Clamp(variantCount, 1, 10);
+        foreach (var macroEvent in events.Where(e => e.Kind == MacroEventKind.MouseMove))
+        {
+            preview.PerfectPath.Add(new Point(macroEvent.X, macroEvent.Y));
+        }
 
+        foreach (var macroEvent in events.Where(e => e.Kind != MacroEventKind.MouseMove))
+        {
+            if (TryGetPoint(macroEvent, out var point))
+            {
+                preview.PerfectMarkers.Add(CreateMarker(point, macroEvent));
+            }
+        }
+
+        var baseSeed = Environment.TickCount ^ macro.Id.GetHashCode();
+        for (var i = 0; i < count; i++)
+        {
+            BuildNoisyVariant(preview, events, noise, new Random(baseSeed + i * 7919));
+        }
+
+        return preview;
+    }
+
+    private static void BuildNoisyVariant(
+        MacroPreview preview,
+        List<MacroEvent> events,
+        NoiseSettings noise,
+        Random random)
+    {
+        var noisyPath = new List<Point>();
+        var noisyMarkers = new List<PreviewMarker>();
         var anchor = Point.Empty;
         var hasAnchor = false;
         var segment = new List<MacroEvent>();
@@ -34,29 +63,26 @@ public static class MacroPreviewBuilder
         {
             if (macroEvent.Kind == MacroEventKind.MouseMove)
             {
-                preview.PerfectPath.Add(new Point(macroEvent.X, macroEvent.Y));
                 segment.Add(macroEvent);
                 continue;
             }
 
-            FlushMoveSegment(preview.NoisyPath, segment, anchor, hasAnchor, noise, random);
+            FlushMoveSegment(noisyPath, segment, anchor, hasAnchor, noise, random);
             segment.Clear();
 
             if (TryGetPoint(macroEvent, out var point))
             {
-                var perfectMarker = CreateMarker(point, macroEvent);
-                preview.PerfectMarkers.Add(perfectMarker);
-
                 var noisyPoint = CreateNoisyAnchor(point, macroEvent, noise, random);
-                preview.NoisyMarkers.Add(CreateMarker(noisyPoint, macroEvent));
-                preview.NoisyPath.Add(noisyPoint);
+                noisyMarkers.Add(CreateMarker(noisyPoint, macroEvent));
+                noisyPath.Add(noisyPoint);
                 anchor = noisyPoint;
                 hasAnchor = true;
             }
         }
 
-        FlushMoveSegment(preview.NoisyPath, segment, anchor, hasAnchor, noise, random);
-        return preview;
+        FlushMoveSegment(noisyPath, segment, anchor, hasAnchor, noise, random);
+        preview.NoisyPaths.Add(noisyPath);
+        preview.NoisyMarkers.Add(noisyMarkers);
     }
 
     private static void FlushMoveSegment(
@@ -167,9 +193,9 @@ public sealed class PreviewOverlayForm : Form
     private readonly Font _markerFont = new("MS UI Gothic", 9F, FontStyle.Bold, GraphicsUnit.Point);
     private readonly Font _helpFont = new("MS UI Gothic", 10F, FontStyle.Regular, GraphicsUnit.Point);
 
-    public PreviewOverlayForm(Macro macro, NoiseSettings noise)
+    public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount)
     {
-        _preview = MacroPreviewBuilder.Build(macro, noise);
+        _preview = MacroPreviewBuilder.Build(macro, noise, variantCount);
         _virtualBounds = GetVirtualBounds();
 
         StartPosition = FormStartPosition.Manual;
@@ -213,9 +239,17 @@ public sealed class PreviewOverlayForm : Form
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
 
         DrawPath(e.Graphics, _preview.PerfectPath, Color.Red, 3);
-        DrawPath(e.Graphics, _preview.NoisyPath, Color.Gold, 2);
+        foreach (var noisyPath in _preview.NoisyPaths)
+        {
+            DrawPath(e.Graphics, noisyPath, Color.Gold, 2, 145);
+        }
+
         DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red);
-        DrawMarkers(e.Graphics, _preview.NoisyMarkers, Color.Gold);
+        foreach (var markers in _preview.NoisyMarkers)
+        {
+            DrawMarkers(e.Graphics, markers, Color.Gold, 155);
+        }
+
         DrawLegend(e.Graphics);
     }
 
@@ -230,14 +264,14 @@ public sealed class PreviewOverlayForm : Form
         base.Dispose(disposing);
     }
 
-    private void DrawPath(Graphics graphics, List<Point> points, Color color, int width)
+    private void DrawPath(Graphics graphics, List<Point> points, Color color, int width, int alpha = 220)
     {
         if (points.Count < 2)
         {
             return;
         }
 
-        using var pen = new Pen(Color.FromArgb(220, color), width)
+        using var pen = new Pen(Color.FromArgb(alpha, color), width)
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
@@ -246,10 +280,10 @@ public sealed class PreviewOverlayForm : Form
         graphics.DrawLines(pen, points.Select(ToLocal).ToArray());
     }
 
-    private void DrawMarkers(Graphics graphics, List<PreviewMarker> markers, Color color)
+    private void DrawMarkers(Graphics graphics, List<PreviewMarker> markers, Color color, int alpha = 210)
     {
-        using var pen = new Pen(color, 2);
-        using var brush = new SolidBrush(Color.FromArgb(210, color));
+        using var pen = new Pen(Color.FromArgb(Math.Min(255, alpha + 40), color), 2);
+        using var brush = new SolidBrush(Color.FromArgb(alpha, color));
         using var textBrush = new SolidBrush(Color.Black);
 
         foreach (var marker in markers)
