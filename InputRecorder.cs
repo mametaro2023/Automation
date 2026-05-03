@@ -12,10 +12,13 @@ public sealed class InputRecorder : IDisposable
     private IntPtr _mouseHook;
     private IntPtr _keyboardHook;
     private readonly Stopwatch _clock = new();
+    private readonly object _eventsLock = new();
     private RecordingOptions _options = RecordingOptions.Standard();
     private Point? _lastMovePoint;
     private long _lastMoveMs;
     private bool _dragging;
+    private CancellationTokenSource? _pollingCts;
+    private Task? _pollingTask;
 
     public InputRecorder()
     {
@@ -52,10 +55,16 @@ public sealed class InputRecorder : IDisposable
         }
 
         IsRecording = true;
+        StartMousePolling();
     }
 
     public List<MacroEvent> Stop()
     {
+        _pollingCts?.Cancel();
+        _pollingCts?.Dispose();
+        _pollingCts = null;
+        _pollingTask = null;
+
         if (_mouseHook != IntPtr.Zero)
         {
             NativeMethods.UnhookWindowsHookEx(_mouseHook);
@@ -74,7 +83,32 @@ public sealed class InputRecorder : IDisposable
         }
 
         IsRecording = false;
-        return Events.ToList();
+        lock (_eventsLock)
+        {
+            return Events.OrderBy(e => e.TimeOffsetMs).ToList();
+        }
+    }
+
+    private void StartMousePolling()
+    {
+        _pollingCts = new CancellationTokenSource();
+        var token = _pollingCts.Token;
+        var intervalMs = Math.Max(1, (int)Math.Round(1000.0 / Math.Clamp(_options.MousePollingRateHz, 1, 1000)));
+
+        _pollingTask = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(intervalMs));
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                var point = Cursor.Position;
+                if (ShouldIgnoreMousePoint?.Invoke(point) == true)
+                {
+                    continue;
+                }
+
+                RecordMoveIfNeeded(point);
+            }
+        }, token);
     }
 
     private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -130,7 +164,6 @@ public sealed class InputRecorder : IDisposable
         switch (message)
         {
             case NativeMethods.WM_MOUSEMOVE:
-                RecordMoveIfNeeded(point);
                 break;
             case NativeMethods.WM_LBUTTONDOWN:
                 _dragging = true;
@@ -179,7 +212,6 @@ public sealed class InputRecorder : IDisposable
     private void RecordMoveIfNeeded(Point point)
     {
         var now = _clock.ElapsedMilliseconds;
-        var minInterval = _dragging ? _options.DragMoveMinIntervalMs : _options.MoveMinIntervalMs;
         var minDistance = _dragging ? _options.DragMoveMinDistancePx : _options.MoveMinDistancePx;
 
         if (_lastMovePoint is null)
@@ -191,7 +223,7 @@ public sealed class InputRecorder : IDisposable
         var dx = point.X - _lastMovePoint.Value.X;
         var dy = point.Y - _lastMovePoint.Value.Y;
         var distanceSquared = dx * dx + dy * dy;
-        if (now - _lastMoveMs >= minInterval || distanceSquared >= minDistance * minDistance)
+        if (distanceSquared >= minDistance * minDistance)
         {
             RecordMove(point, now);
         }
@@ -223,7 +255,11 @@ public sealed class InputRecorder : IDisposable
     private void Record(MacroEvent macroEvent)
     {
         macroEvent.TimeOffsetMs = _clock.ElapsedMilliseconds;
-        Events.Add(macroEvent);
+        lock (_eventsLock)
+        {
+            Events.Add(macroEvent);
+        }
+
         EventRecorded?.Invoke(macroEvent);
     }
 

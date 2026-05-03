@@ -18,10 +18,15 @@ public partial class Form1 : Form
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
     private ComboBox _densityBox = null!;
+    private NumericUpDown _pollingRateBox = null!;
+    private NumericUpDown _countdownBox = null!;
     private NumericUpDown _coordNoiseBox = null!;
     private NumericUpDown _timeNoiseBox = null!;
     private StatusStrip _statusStrip = null!;
     private ToolStripStatusLabel _statusLabel = null!;
+    private SplitContainer _mainSplit = null!;
+    private SplitContainer _rightSplit = null!;
+    private CancellationTokenSource? _countdownCts;
     private bool _updatingSelection;
 
     public Form1()
@@ -31,9 +36,12 @@ public partial class Form1 : Form
         _recorder.EventRecorded += RecorderOnEventRecorded;
     }
 
+    private bool IsCountingDown => _countdownCts is not null;
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        AdjustSplitters();
         RefreshHotkeys();
     }
 
@@ -50,7 +58,7 @@ public partial class Form1 : Form
 
             if (_hotkeys.TryGetMacroId(hotkeyId, out var macroId))
             {
-                var macro = _macros.FirstOrDefault(macro => macro.Id == macroId);
+                var macro = _macros.FirstOrDefault(item => item.Id == macroId);
                 if (macro is not null)
                 {
                     _ = PlayMacroAsync(macro);
@@ -67,23 +75,39 @@ public partial class Form1 : Form
     {
         Text = "Automation Tool";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(860, 560);
-        ClientSize = new Size(960, 620);
+        MinimumSize = new Size(920, 600);
+        ClientSize = new Size(1040, 640);
         Font = new Font("MS UI Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        Resize += (_, _) => AdjustSplitters();
 
-        var topPanel = new Panel
+        Controls.Clear();
+
+        var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
-            Height = 40
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3
         };
-        Controls.Add(topPanel);
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        Controls.Add(root);
 
-        _recordButton = CreateButton("Record", 8, 8, RecordButtonOnClick);
-        _stopButton = CreateButton("Stop", 88, 8, StopButtonOnClick);
-        _playButton = CreateButton("Play", 168, 8, PlayButtonOnClick);
-        _deleteButton = CreateButton("Delete", 248, 8, DeleteButtonOnClick);
-        _saveButton = CreateButton("Save", 344, 8, SaveButtonOnClick);
-        _loadButton = CreateButton("Load", 424, 8, LoadButtonOnClick);
+        var topPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = new Padding(8, 7, 8, 5),
+            WrapContents = false
+        };
+        root.Controls.Add(topPanel, 0, 0);
+
+        _recordButton = CreateButton("記録", RecordButtonOnClick);
+        _stopButton = CreateButton("停止", StopButtonOnClick);
+        _playButton = CreateButton("再生", PlayButtonOnClick);
+        _deleteButton = CreateButton("削除", DeleteButtonOnClick);
+        _saveButton = CreateButton("保存", SaveButtonOnClick);
+        _loadButton = CreateButton("読込", LoadButtonOnClick);
         topPanel.Controls.AddRange(new Control[]
         {
             _recordButton,
@@ -94,13 +118,15 @@ public partial class Form1 : Form
             _loadButton
         });
 
-        var mainSplit = new SplitContainer
+        _mainSplit = new SplitContainer
         {
             Dock = DockStyle.Fill,
-            SplitterDistance = 360,
+            FixedPanel = FixedPanel.Panel1,
+            Panel1MinSize = 120,
+            Panel2MinSize = 120,
             BorderStyle = BorderStyle.Fixed3D
         };
-        Controls.Add(mainSplit);
+        root.Controls.Add(_mainSplit, 0, 1);
 
         _macroList = new ListView
         {
@@ -110,140 +136,93 @@ public partial class Form1 : Form
             HideSelection = false,
             MultiSelect = false
         };
-        _macroList.Columns.Add("Name", 150);
-        _macroList.Columns.Add("Hotkey", 110);
-        _macroList.Columns.Add("Events", 60);
-        _macroList.Columns.Add("Duration", 70);
+        _macroList.Columns.Add("名前", 150);
+        _macroList.Columns.Add("ショートカット", 110);
+        _macroList.Columns.Add("件数", 54);
+        _macroList.Columns.Add("時間", 70);
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
-        mainSplit.Panel1.Controls.Add(_macroList);
+        _mainSplit.Panel1.Controls.Add(_macroList);
 
-        var rightSplit = new SplitContainer
+        _rightSplit = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
-            SplitterDistance = 170
+            Panel1MinSize = 100,
+            Panel2MinSize = 100
         };
-        mainSplit.Panel2.Controls.Add(rightSplit);
+        _mainSplit.Panel2.Controls.Add(_rightSplit);
 
-        var settingsPanel = new Panel
+        var settingsPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 2,
             Padding = new Padding(8)
         };
-        rightSplit.Panel1.Controls.Add(settingsPanel);
+        settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 290));
+        settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        _rightSplit.Panel1.Controls.Add(settingsPanel);
 
-        var macroGroup = new GroupBox
-        {
-            Text = "Macro",
-            Location = new Point(8, 8),
-            Size = new Size(270, 130)
-        };
-        settingsPanel.Controls.Add(macroGroup);
-
-        macroGroup.Controls.Add(new Label
-        {
-            Text = "Name",
-            Location = new Point(10, 24),
-            AutoSize = true
-        });
-        _nameBox = new TextBox
-        {
-            Location = new Point(78, 20),
-            Width = 170
-        };
+        var macroGroup = CreateGroup("マクロ");
+        settingsPanel.Controls.Add(macroGroup, 0, 0);
+        settingsPanel.SetRowSpan(macroGroup, 2);
+        AddLabeledControl(macroGroup, "名前", _nameBox = new TextBox(), 24);
         _nameBox.TextChanged += NameBoxOnTextChanged;
-        macroGroup.Controls.Add(_nameBox);
-
-        macroGroup.Controls.Add(new Label
-        {
-            Text = "Shortcut",
-            Location = new Point(10, 56),
-            AutoSize = true
-        });
-        _hotkeyBox = new TextBox
-        {
-            Location = new Point(78, 52),
-            Width = 170,
-            ReadOnly = true
-        };
+        AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58);
         _hotkeyBox.KeyDown += HotkeyBoxOnKeyDown;
-        macroGroup.Controls.Add(_hotkeyBox);
-
         macroGroup.Controls.Add(new Label
         {
-            Text = "Focus this box and press shortcut keys.",
-            Location = new Point(10, 88),
-            AutoSize = true
+            Text = "入力欄を選択してキーを押す（削除で解除）",
+            Location = new Point(12, 94),
+            Size = new Size(250, 32)
         });
 
-        var recordGroup = new GroupBox
-        {
-            Text = "Recording",
-            Location = new Point(292, 8),
-            Size = new Size(180, 130)
-        };
-        settingsPanel.Controls.Add(recordGroup);
-        recordGroup.Controls.Add(new Label
-        {
-            Text = "Density",
-            Location = new Point(10, 26),
-            AutoSize = true
-        });
+        var recordGroup = CreateGroup("記録");
+        settingsPanel.Controls.Add(recordGroup, 1, 0);
         _densityBox = new ComboBox
         {
-            Location = new Point(72, 22),
-            Width = 90,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _densityBox.Items.AddRange(new object[] { "Light", "Standard", "High" });
+        _densityBox.Items.AddRange(new object[] { "軽量", "標準", "高精度" });
         _densityBox.SelectedIndex = 1;
-        recordGroup.Controls.Add(_densityBox);
+        _densityBox.SelectedIndexChanged += (_, _) => ApplyDensityDefaults();
+        AddLabeledControl(recordGroup, "密度", _densityBox, 22);
+        AddLabeledControl(recordGroup, "ポーリングHz", _pollingRateBox = new NumericUpDown
+        {
+            Minimum = 10,
+            Maximum = 1000,
+            Increment = 10,
+            Value = 200
+        }, 54);
+        AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 60,
+            Value = 3
+        }, 86);
 
-        recordGroup.Controls.Add(new Label
+        var noiseGroup = CreateGroup("ノイズ");
+        settingsPanel.Controls.Add(noiseGroup, 1, 1);
+        AddLabeledControl(noiseGroup, "クリック座標(px)", _coordNoiseBox = new NumericUpDown
         {
-            Text = "Esc is not global. Emergency: Ctrl+Alt+Pause",
-            Location = new Point(10, 62),
-            Size = new Size(156, 45)
-        });
-
-        var noiseGroup = new GroupBox
-        {
-            Text = "Noise",
-            Location = new Point(486, 8),
-            Size = new Size(210, 130)
-        };
-        settingsPanel.Controls.Add(noiseGroup);
-        noiseGroup.Controls.Add(new Label
-        {
-            Text = "Coord px",
-            Location = new Point(10, 28),
-            AutoSize = true
-        });
-        _coordNoiseBox = new NumericUpDown
-        {
-            Location = new Point(110, 24),
-            Width = 70,
             Minimum = 0,
             Maximum = 20,
             Value = 2
-        };
-        noiseGroup.Controls.Add(_coordNoiseBox);
-
-        noiseGroup.Controls.Add(new Label
+        }, 28);
+        AddLabeledControl(noiseGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
         {
-            Text = "Time %",
-            Location = new Point(10, 62),
-            AutoSize = true
-        });
-        _timeNoiseBox = new NumericUpDown
-        {
-            Location = new Point(110, 58),
-            Width = 70,
             Minimum = 0,
             Maximum = 50,
             Value = 5
-        };
-        noiseGroup.Controls.Add(_timeNoiseBox);
+        }, 62);
+        noiseGroup.Controls.Add(new Label
+        {
+            Text = "移動中の座標にはノイズを載せません。",
+            Location = new Point(12, 94),
+            Size = new Size(260, 22)
+        });
 
         _eventList = new ListView
         {
@@ -251,51 +230,139 @@ public partial class Form1 : Form
             View = View.Details,
             FullRowSelect = true
         };
-        _eventList.Columns.Add("Time", 90);
-        _eventList.Columns.Add("Type", 110);
-        _eventList.Columns.Add("Detail", 360);
-        rightSplit.Panel2.Controls.Add(_eventList);
+        _eventList.Columns.Add("時刻", 90);
+        _eventList.Columns.Add("種別", 110);
+        _eventList.Columns.Add("詳細", 380);
+        _rightSplit.Panel2.Controls.Add(_eventList);
 
-        _statusLabel = new ToolStripStatusLabel("Ready.");
-        _statusStrip = new StatusStrip();
+        _statusLabel = new ToolStripStatusLabel("待機中。");
+        _statusStrip = new StatusStrip
+        {
+            Dock = DockStyle.Fill
+        };
         _statusStrip.Items.Add(_statusLabel);
-        Controls.Add(_statusStrip);
+        root.Controls.Add(_statusStrip, 0, 2);
 
         UpdateButtons();
     }
 
-    private Button CreateButton(string text, int x, int y, EventHandler click)
+    private void AdjustSplitters()
+    {
+        if (_mainSplit is not null && _mainSplit.Width > 0)
+        {
+            const int desiredLeft = 390;
+            const int desiredLeftMin = 320;
+            const int desiredRightMin = 520;
+            var maxDistance = _mainSplit.Width - desiredRightMin - _mainSplit.SplitterWidth;
+            if (maxDistance >= desiredLeftMin)
+            {
+                _mainSplit.SplitterDistance = Math.Clamp(desiredLeft, desiredLeftMin, maxDistance);
+            }
+        }
+
+        if (_rightSplit is not null && _rightSplit.Height > 0)
+        {
+            const int desiredTop = 220;
+            const int desiredTopMin = 190;
+            const int desiredBottomMin = 180;
+            var maxDistance = _rightSplit.Height - desiredBottomMin - _rightSplit.SplitterWidth;
+            if (maxDistance >= desiredTopMin)
+            {
+                _rightSplit.SplitterDistance = Math.Clamp(desiredTop, desiredTopMin, maxDistance);
+            }
+        }
+    }
+
+    private static Button CreateButton(string text, EventHandler click)
     {
         var button = new Button
         {
             Text = text,
-            Location = new Point(x, y),
-            Size = new Size(72, 24)
+            Size = new Size(72, 24),
+            Margin = new Padding(0, 0, 10, 0)
         };
         button.Click += click;
         return button;
     }
 
+    private static GroupBox CreateGroup(string text)
+    {
+        return new GroupBox
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(4)
+        };
+    }
+
+    private static void AddLabeledControl(Control parent, string labelText, Control control, int y)
+    {
+        parent.Controls.Add(new Label
+        {
+            Text = labelText,
+            Location = new Point(12, y + 4),
+            Size = new Size(105, 20)
+        });
+        control.Location = new Point(122, y);
+        control.Size = new Size(Math.Max(90, parent.Width - 138), 23);
+        control.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+        parent.Controls.Add(control);
+    }
+
     private void RecordButtonOnClick(object? sender, EventArgs e)
     {
-        if (_player.IsPlaying)
+        _ = StartRecordingWithCountdownAsync();
+    }
+
+    private async Task StartRecordingWithCountdownAsync()
+    {
+        if (_player.IsPlaying || _recorder.IsRecording || IsCountingDown)
         {
             return;
         }
 
+        _countdownCts = new CancellationTokenSource();
+        var token = _countdownCts.Token;
+        UpdateButtons();
+
+        try
+        {
+            var countdown = (int)_countdownBox.Value;
+            for (var remaining = countdown; remaining > 0; remaining--)
+            {
+                SetStatus($"記録開始まで {remaining} 秒。");
+                await Task.Delay(1000, token);
+            }
+
+            StartRecording();
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("記録開始をキャンセルしました。");
+        }
+        finally
+        {
+            _countdownCts?.Dispose();
+            _countdownCts = null;
+            UpdateButtons();
+        }
+    }
+
+    private void StartRecording()
+    {
         var options = GetRecordingOptions();
-        _recorder.ShouldIgnoreMousePoint = p => RectangleToScreen(ClientRectangle).Contains(p);
+        _recorder.ShouldIgnoreMousePoint = null;
         try
         {
             _recorder.Start(options);
             _eventList.Items.Clear();
-            SetStatus($"Recording: {options.Name}");
+            SetStatus($"記録中: {options.Name} / {options.MousePollingRateHz}Hz");
             UpdateButtons();
         }
         catch (Exception ex)
         {
             SetStatus(ex.Message);
-            MessageBox.Show(this, ex.Message, "Recording Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "記録エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -324,14 +391,14 @@ public partial class Form1 : Form
         _macros.Remove(macro);
         RefreshMacroList();
         RefreshHotkeys();
-        SetStatus("Macro deleted.");
+        SetStatus("マクロを削除しました。");
     }
 
     private void SaveButtonOnClick(object? sender, EventArgs e)
     {
         using var dialog = new SaveFileDialog
         {
-            Filter = "Macro files (*.json)|*.json|All files (*.*)|*.*",
+            Filter = "マクロファイル (*.json)|*.json|すべてのファイル (*.*)|*.*",
             DefaultExt = "json",
             FileName = "macros.json"
         };
@@ -341,14 +408,14 @@ public partial class Form1 : Form
         }
 
         MacroStore.Save(dialog.FileName, _macros);
-        SetStatus($"Saved: {dialog.FileName}");
+        SetStatus($"保存しました: {dialog.FileName}");
     }
 
     private void LoadButtonOnClick(object? sender, EventArgs e)
     {
         using var dialog = new OpenFileDialog
         {
-            Filter = "Macro files (*.json)|*.json|All files (*.*)|*.*"
+            Filter = "マクロファイル (*.json)|*.json|すべてのファイル (*.*)|*.*"
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
@@ -359,31 +426,38 @@ public partial class Form1 : Form
         _macros.AddRange(MacroStore.Load(dialog.FileName));
         RefreshMacroList();
         RefreshHotkeys();
-        SetStatus($"Loaded: {dialog.FileName}");
+        SetStatus($"読み込みました: {dialog.FileName}");
     }
 
     private void StopCurrentWork()
     {
+        if (_countdownCts is not null)
+        {
+            _countdownCts.Cancel();
+            return;
+        }
+
         if (_recorder.IsRecording)
         {
             var events = _recorder.Stop();
+            RemoveTrailingToolWindowMouseEvents(events);
             if (events.Count > 0)
             {
                 var macro = new Macro
                 {
                     Name = string.IsNullOrWhiteSpace(_nameBox.Text)
-                        ? $"Macro {DateTime.Now:yyyyMMdd HHmmss}"
+                        ? $"マクロ {DateTime.Now:yyyyMMdd HHmmss}"
                         : _nameBox.Text.Trim(),
                     Recording = GetRecordingOptions(),
                     Events = events
                 };
                 _macros.Add(macro);
                 RefreshMacroList(macro.Id);
-                SetStatus($"Recorded {events.Count} events.");
+                SetStatus($"{events.Count} 件のイベントを記録しました。");
             }
             else
             {
-                SetStatus("Recording stopped. No events captured.");
+                SetStatus("記録を停止しました。イベントはありません。");
             }
 
             RefreshHotkeys();
@@ -396,9 +470,40 @@ public partial class Form1 : Form
         UpdateButtons();
     }
 
+    private void RemoveTrailingToolWindowMouseEvents(List<MacroEvent> events)
+    {
+        if (events.Count == 0)
+        {
+            return;
+        }
+
+        var toolBounds = RectangleToScreen(ClientRectangle);
+        var lastTime = events[^1].TimeOffsetMs;
+        for (var i = events.Count - 1; i >= 0; i--)
+        {
+            var macroEvent = events[i];
+            if (!IsMouseEvent(macroEvent)
+                || lastTime - macroEvent.TimeOffsetMs > 700
+                || !toolBounds.Contains(macroEvent.X, macroEvent.Y))
+            {
+                break;
+            }
+
+            events.RemoveAt(i);
+        }
+    }
+
+    private static bool IsMouseEvent(MacroEvent macroEvent)
+    {
+        return macroEvent.Kind is MacroEventKind.MouseMove
+            or MacroEventKind.MouseDown
+            or MacroEventKind.MouseUp
+            or MacroEventKind.MouseWheel;
+    }
+
     private async Task PlayMacroAsync(Macro macro)
     {
-        if (_recorder.IsRecording)
+        if (_recorder.IsRecording || IsCountingDown)
         {
             return;
         }
@@ -437,7 +542,7 @@ public partial class Form1 : Form
             return;
         }
 
-        macro.Name = string.IsNullOrWhiteSpace(_nameBox.Text) ? "New Macro" : _nameBox.Text.Trim();
+        macro.Name = string.IsNullOrWhiteSpace(_nameBox.Text) ? "マクロ" : _nameBox.Text.Trim();
         RefreshMacroList(macro.Id);
     }
 
@@ -477,12 +582,25 @@ public partial class Form1 : Form
 
     private RecordingOptions GetRecordingOptions()
     {
-        return _densityBox.SelectedIndex switch
+        var options = _densityBox.SelectedIndex switch
         {
             0 => RecordingOptions.Lightweight(),
             2 => RecordingOptions.HighPrecision(),
             _ => RecordingOptions.Standard()
         };
+        options.MousePollingRateHz = (int)_pollingRateBox.Value;
+        return options;
+    }
+
+    private void ApplyDensityDefaults()
+    {
+        var rate = _densityBox.SelectedIndex switch
+        {
+            0 => 100,
+            2 => 200,
+            _ => 200
+        };
+        _pollingRateBox.Value = rate;
     }
 
     private Macro? GetSelectedMacro()
@@ -548,7 +666,7 @@ public partial class Form1 : Form
     private void AddEventListItem(MacroEvent macroEvent)
     {
         var item = new ListViewItem($"{macroEvent.TimeOffsetMs} ms");
-        item.SubItems.Add(macroEvent.Kind.ToString());
+        item.SubItems.Add(FormatEventKind(macroEvent.Kind));
         item.SubItems.Add(DescribeEvent(macroEvent));
         _eventList.Items.Add(item);
         if (_eventList.Items.Count > 0)
@@ -557,14 +675,41 @@ public partial class Form1 : Form
         }
     }
 
+    private static string FormatEventKind(MacroEventKind kind)
+    {
+        return kind switch
+        {
+            MacroEventKind.MouseMove => "マウス移動",
+            MacroEventKind.MouseDown => "マウス押下",
+            MacroEventKind.MouseUp => "マウス解放",
+            MacroEventKind.MouseWheel => "ホイール",
+            MacroEventKind.KeyDown => "キー押下",
+            MacroEventKind.KeyUp => "キー解放",
+            _ => kind.ToString()
+        };
+    }
+
     private static string DescribeEvent(MacroEvent macroEvent)
     {
         return macroEvent.Kind switch
         {
             MacroEventKind.MouseMove => $"X={macroEvent.X}, Y={macroEvent.Y}",
-            MacroEventKind.MouseDown or MacroEventKind.MouseUp => $"{macroEvent.Button} at X={macroEvent.X}, Y={macroEvent.Y}",
-            MacroEventKind.MouseWheel => $"Delta={macroEvent.WheelDelta} at X={macroEvent.X}, Y={macroEvent.Y}",
+            MacroEventKind.MouseDown or MacroEventKind.MouseUp => $"{FormatButton(macroEvent.Button)} X={macroEvent.X}, Y={macroEvent.Y}",
+            MacroEventKind.MouseWheel => $"量={macroEvent.WheelDelta} X={macroEvent.X}, Y={macroEvent.Y}",
             MacroEventKind.KeyDown or MacroEventKind.KeyUp => macroEvent.KeyCode.ToString(),
+            _ => ""
+        };
+    }
+
+    private static string FormatButton(RecordedMouseButton button)
+    {
+        return button switch
+        {
+            RecordedMouseButton.Left => "左",
+            RecordedMouseButton.Right => "右",
+            RecordedMouseButton.Middle => "中",
+            RecordedMouseButton.XButton1 => "拡張1",
+            RecordedMouseButton.XButton2 => "拡張2",
             _ => ""
         };
     }
@@ -590,14 +735,15 @@ public partial class Form1 : Form
     {
         var recording = _recorder.IsRecording;
         var playing = _player.IsPlaying;
+        var countingDown = IsCountingDown;
         var selected = GetSelectedMacro() is not null;
 
-        _recordButton.Enabled = !recording && !playing;
-        _stopButton.Enabled = recording || playing;
-        _playButton.Enabled = selected && !recording && !playing;
-        _deleteButton.Enabled = selected && !recording && !playing;
-        _saveButton.Enabled = !recording && !playing;
-        _loadButton.Enabled = !recording && !playing;
+        _recordButton.Enabled = !recording && !playing && !countingDown;
+        _stopButton.Enabled = recording || playing || countingDown;
+        _playButton.Enabled = selected && !recording && !playing && !countingDown;
+        _deleteButton.Enabled = selected && !recording && !playing && !countingDown;
+        _saveButton.Enabled = !recording && !playing && !countingDown;
+        _loadButton.Enabled = !recording && !playing && !countingDown;
     }
 
     private void SetStatus(string message)
@@ -610,5 +756,4 @@ public partial class Form1 : Form
 
         _statusLabel.Text = message;
     }
-
 }

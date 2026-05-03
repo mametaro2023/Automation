@@ -76,18 +76,16 @@ public sealed class HotkeyGesture
 
 public sealed class RecordingOptions
 {
-    public string Name { get; set; } = "Standard";
-    public int MoveMinIntervalMs { get; set; } = 8;
+    public string Name { get; set; } = "標準";
+    public int MousePollingRateHz { get; set; } = 200;
     public int MoveMinDistancePx { get; set; } = 2;
-    public int DragMoveMinIntervalMs { get; set; } = 4;
     public int DragMoveMinDistancePx { get; set; } = 1;
 
     public static RecordingOptions Lightweight() => new()
     {
-        Name = "Lightweight",
-        MoveMinIntervalMs = 16,
+        Name = "軽量",
+        MousePollingRateHz = 100,
         MoveMinDistancePx = 4,
-        DragMoveMinIntervalMs = 8,
         DragMoveMinDistancePx = 2
     };
 
@@ -95,10 +93,9 @@ public sealed class RecordingOptions
 
     public static RecordingOptions HighPrecision() => new()
     {
-        Name = "High Precision",
-        MoveMinIntervalMs = 2,
+        Name = "高精度",
+        MousePollingRateHz = 200,
         MoveMinDistancePx = 1,
-        DragMoveMinIntervalMs = 1,
         DragMoveMinDistancePx = 1
     };
 }

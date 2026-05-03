@@ -23,7 +23,7 @@ public sealed class MacroPlayer : IDisposable
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         IsPlaying = true;
-        status?.Invoke($"Playing: {macro.Name}");
+        status?.Invoke($"再生中: {macro.Name}");
 
         try
         {
@@ -47,14 +47,14 @@ public sealed class MacroPlayer : IDisposable
         }
         catch (OperationCanceledException)
         {
-            status?.Invoke("Playback stopped.");
+            status?.Invoke("再生を停止しました。");
         }
         finally
         {
             IsPlaying = false;
             _cts.Dispose();
             _cts = null;
-            status?.Invoke("Ready.");
+            status?.Invoke("待機中。");
         }
     }
 
@@ -79,7 +79,7 @@ public sealed class MacroPlayer : IDisposable
         switch (macroEvent.Kind)
         {
             case MacroEventKind.MouseMove:
-                MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                MoveMouseExact(macroEvent.X, macroEvent.Y);
                 foreach (var button in _pressedButtonPositions.Keys)
                 {
                     _movedWhilePressed.Add(button);
@@ -107,7 +107,7 @@ public sealed class MacroPlayer : IDisposable
                 _movedWhilePressed.Remove(macroEvent.Button);
                 break;
             case MacroEventKind.MouseWheel:
-                MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                MoveMouseExact(macroEvent.X, macroEvent.Y);
                 SendMouseWheel(macroEvent.WheelDelta);
                 break;
             case MacroEventKind.KeyDown:

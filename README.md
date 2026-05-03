@@ -4,25 +4,27 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 
 ## Features
 
-- Records keyboard and mouse input with low-level Windows hooks.
-- Uses event-driven recording with configurable mouse move thinning:
+- Records keyboard and button/wheel input with low-level Windows hooks.
+- Records mouse movement with configurable polling, defaulting to 200Hz:
   - Light
   - Standard
   - High
 - Replays input with `SendInput`.
 - Adds small configurable replay jitter:
-  - Mouse coordinate jitter
+  - Click coordinate jitter
   - Timing jitter
 - Saves and loads macros as JSON.
 - Registers global macro shortcuts.
 - Emergency stop hotkey: `Ctrl+Alt+Pause`.
+- Optional countdown before recording starts.
 
 ## Notes
 
 - This tool is intended for local desktop automation.
 - Administrative windows may require running this tool as administrator.
 - UAC secure desktop cannot be automated by normal desktop apps.
-- Coordinate jitter should be kept low for small buttons and precise UI targets.
+- Coordinate jitter is applied to click/button targets, not every mouse move.
+- Coordinate jitter should still be kept low for small buttons and precise UI targets.
 
 ## Build
 
