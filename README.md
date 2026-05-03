@@ -32,6 +32,8 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Coordinate jitter is applied to click/button targets, not every mouse move.
 - Mouse movement is interpolated during replay to avoid jumpy point-to-point playback.
 - Click and key event positions are snapped close to their recorded coordinates.
+- Movement noise is applied per movement segment, not per frame, so the pointer does not shake.
+- Click anchors are capped to small jitter, and key anchors are not coordinate-jittered.
 - Coordinate jitter should still be kept low for small buttons and precise UI targets.
 - Detailed event rows are not rendered in the UI while recording, to avoid slowing down pointer rendering.
 

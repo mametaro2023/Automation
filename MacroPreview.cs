@@ -115,8 +115,8 @@ public static class MacroPreviewBuilder
     private static Point CreateNoisyAnchor(Point point, MacroEvent macroEvent, NoiseSettings noise, Random random)
     {
         var maxJitter = macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp
-            ? Math.Min(noise.CoordinateJitterPx, 4)
-            : 1;
+            ? Math.Min(noise.CoordinateJitterPx, 2)
+            : 0;
 
         if (maxJitter <= 0)
         {

@@ -74,7 +74,7 @@ public sealed class MacroPlayer : IDisposable
                 }
 
                 i--;
-                AddMouseRun(actions, currentPosition, currentTimeMs, run, noise);
+                AddMouseRun(actions, currentPosition, currentTimeMs, run, noise, pressedPositions.Count > 0);
                 currentPosition = new Point(run[^1].Event.X, run[^1].Event.Y);
                 currentTimeMs = run[^1].TimeMs;
 
@@ -161,7 +161,8 @@ public sealed class MacroPlayer : IDisposable
         Point startPosition,
         double startTimeMs,
         List<TimedMacroEvent> run,
-        NoiseSettings noise)
+        NoiseSettings noise,
+        bool isDragging)
     {
         if (run.Count == 0)
         {
@@ -181,16 +182,64 @@ public sealed class MacroPlayer : IDisposable
             return;
         }
 
+        var profile = CreateMotionProfile(samples, noise, isDragging);
         var nextFrame = Math.Ceiling((startTimeMs + 0.001) / FrameIntervalMs) * FrameIntervalMs;
         for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += FrameIntervalMs)
         {
-            actions.Add(PlaybackAction.MouseMove(timeMs, Interpolate(samples, timeMs, noise.AccelerationJitterPercent)));
+            actions.Add(PlaybackAction.MouseMove(timeMs, InterpolateNatural(samples, timeMs, profile)));
         }
 
         actions.Add(PlaybackAction.MouseMove(endTimeMs, samples[^1].Point));
     }
 
-    private Point Interpolate(List<TimedPoint> samples, double timeMs, int accelerationJitterPercent)
+    private MotionProfile CreateMotionProfile(List<TimedPoint> samples, NoiseSettings noise, bool isDragging)
+    {
+        var start = samples[0].Point;
+        var end = samples[^1].Point;
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var distance = Math.Sqrt(dx * dx + dy * dy);
+        var strength = Math.Clamp(noise.AccelerationJitterPercent, 0, 50) / 100.0;
+
+        var normalX = distance > 0 ? -dy / distance : 0.0;
+        var normalY = distance > 0 ? dx / distance : 0.0;
+        var maxCurve = isDragging ? 7.0 : 26.0;
+        var curveScale = isDragging ? 0.35 : 1.0;
+        var amplitude = distance < 24
+            ? 0.0
+            : Math.Min(maxCurve, distance * 0.055 * strength * curveScale);
+
+        return new MotionProfile
+        {
+            StartTimeMs = samples[0].TimeMs,
+            EndTimeMs = samples[^1].TimeMs,
+            AccelerationBias = (_random.NextDouble() * 2.0 - 1.0) * strength,
+            CurveA = (_random.NextDouble() * 2.0 - 1.0) * amplitude,
+            CurveB = (_random.NextDouble() * 2.0 - 1.0) * amplitude * 0.45,
+            NormalX = normalX,
+            NormalY = normalY
+        };
+    }
+
+    private static Point InterpolateNatural(List<TimedPoint> samples, double timeMs, MotionProfile profile)
+    {
+        var progress = Math.Clamp(
+            (timeMs - profile.StartTimeMs) / Math.Max(0.001, profile.EndTimeMs - profile.StartTimeMs),
+            0.0,
+            1.0);
+        var sourceTime = profile.StartTimeMs + profile.Ease(progress) * (profile.EndTimeMs - profile.StartTimeMs);
+        var basePoint = InterpolateRecordedPath(samples, sourceTime);
+        var envelope = Math.Pow(Math.Sin(Math.PI * progress), 1.25);
+        var sideOffset = envelope
+            * (Math.Sin(Math.PI * progress) * profile.CurveA
+                + Math.Sin(Math.PI * 2.0 * progress) * profile.CurveB);
+
+        return new Point(
+            (int)Math.Round(basePoint.X + profile.NormalX * sideOffset),
+            (int)Math.Round(basePoint.Y + profile.NormalY * sideOffset));
+    }
+
+    private static Point InterpolateRecordedPath(List<TimedPoint> samples, double timeMs)
     {
         if (samples.Count == 1)
         {
@@ -209,27 +258,10 @@ public sealed class MacroPlayer : IDisposable
         var afterNext = samples[Math.Min(samples.Count - 1, index + 2)];
         var span = Math.Max(0.001, next.TimeMs - current.TimeMs);
         var t = Math.Clamp((timeMs - current.TimeMs) / span, 0.0, 1.0);
-        var easedT = ApplyAccelerationJitter(t, accelerationJitterPercent);
 
         return new Point(
-            (int)Math.Round(Catmull(previous.Point.X, current.Point.X, next.Point.X, afterNext.Point.X, easedT)),
-            (int)Math.Round(Catmull(previous.Point.Y, current.Point.Y, next.Point.Y, afterNext.Point.Y, easedT)));
-    }
-
-    private double ApplyAccelerationJitter(double t, int accelerationJitterPercent)
-    {
-        if (accelerationJitterPercent <= 0)
-        {
-            return SmoothStep(t);
-        }
-
-        var jitter = Math.Clamp(accelerationJitterPercent, 0, 50) / 100.0;
-        var accelerationBias = (_random.NextDouble() * 2.0 - 1.0) * jitter;
-        var baseCurve = SmoothStep(t);
-        var accelerationCurve = accelerationBias >= 0
-            ? Math.Pow(t, 1.0 + accelerationBias)
-            : 1.0 - Math.Pow(1.0 - t, 1.0 - accelerationBias);
-        return Math.Clamp(baseCurve * 0.75 + accelerationCurve * 0.25, 0.0, 1.0);
+            (int)Math.Round(Catmull(previous.Point.X, current.Point.X, next.Point.X, afterNext.Point.X, t)),
+            (int)Math.Round(Catmull(previous.Point.Y, current.Point.Y, next.Point.Y, afterNext.Point.Y, t)));
     }
 
     private static double Catmull(double p0, double p1, double p2, double p3, double t)
@@ -251,10 +283,11 @@ public sealed class MacroPlayer : IDisposable
     {
         var x = macroEvent.X;
         var y = macroEvent.Y;
-        if (noise.CoordinateJitterPx > 0)
+        var maxJitter = Math.Min(noise.CoordinateJitterPx, 2);
+        if (maxJitter > 0)
         {
-            x += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
-            y += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
+            x += _random.Next(-maxJitter, maxJitter + 1);
+            y += _random.Next(-maxJitter, maxJitter + 1);
         }
 
         return new Point(x, y);
@@ -454,6 +487,26 @@ public sealed class MacroPlayer : IDisposable
 
     private sealed record TimedMacroEvent(double TimeMs, MacroEvent Event);
     private sealed record TimedPoint(double TimeMs, Point Point);
+
+    private sealed class MotionProfile
+    {
+        public double StartTimeMs { get; init; }
+        public double EndTimeMs { get; init; }
+        public double AccelerationBias { get; init; }
+        public double CurveA { get; init; }
+        public double CurveB { get; init; }
+        public double NormalX { get; init; }
+        public double NormalY { get; init; }
+
+        public double Ease(double progress)
+        {
+            var baseCurve = SmoothStep(progress);
+            var accelerationCurve = AccelerationBias >= 0
+                ? Math.Pow(progress, 1.0 + AccelerationBias)
+                : 1.0 - Math.Pow(1.0 - progress, 1.0 - AccelerationBias);
+            return Math.Clamp(baseCurve * 0.8 + accelerationCurve * 0.2, 0.0, 1.0);
+        }
+    }
 
     private enum PlaybackActionKind
     {
