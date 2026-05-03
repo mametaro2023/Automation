@@ -18,6 +18,9 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Registers global macro shortcuts.
 - Emergency stop hotkey: `Ctrl+Alt+Pause`.
 - Optional countdown before recording starts.
+- Preview overlay that draws recorded movement without sending input:
+  - Red: exact recorded path
+  - Yellow: noise-adjusted path
 
 ## Notes
 
@@ -28,6 +31,7 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Mouse movement is interpolated during replay to avoid jumpy point-to-point playback.
 - Click and key event positions are snapped close to their recorded coordinates.
 - Coordinate jitter should still be kept low for small buttons and precise UI targets.
+- Detailed event rows are not rendered in the UI while recording, to avoid slowing down pointer rendering.
 
 ## Build
 

@@ -13,8 +13,9 @@ public partial class Form1 : Form
     private Button _deleteButton = null!;
     private Button _saveButton = null!;
     private Button _loadButton = null!;
+    private Button _previewButton = null!;
     private ListView _macroList = null!;
-    private ListView _eventList = null!;
+    private Label _summaryLabel = null!;
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
     private ComboBox _densityBox = null!;
@@ -33,7 +34,6 @@ public partial class Form1 : Form
     {
         InitializeComponent();
         BuildInterface();
-        _recorder.EventRecorded += RecorderOnEventRecorded;
     }
 
     private bool IsCountingDown => _countdownCts is not null;
@@ -108,6 +108,7 @@ public partial class Form1 : Form
         _deleteButton = CreateButton("削除", DeleteButtonOnClick);
         _saveButton = CreateButton("保存", SaveButtonOnClick);
         _loadButton = CreateButton("読込", LoadButtonOnClick);
+        _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
         topPanel.Controls.AddRange(new Control[]
         {
             _recordButton,
@@ -115,7 +116,8 @@ public partial class Form1 : Form
             _playButton,
             _deleteButton,
             _saveButton,
-            _loadButton
+            _loadButton,
+            _previewButton
         });
 
         _mainSplit = new SplitContainer
@@ -231,16 +233,14 @@ public partial class Form1 : Form
             Size = new Size(300, 24)
         });
 
-        _eventList = new ListView
+        _summaryLabel = new Label
         {
             Dock = DockStyle.Fill,
-            View = View.Details,
-            FullRowSelect = true
+            BorderStyle = BorderStyle.Fixed3D,
+            Padding = new Padding(10),
+            Text = "記録データの詳細は表示しません。\r\nプレビューで軌跡を確認できます。"
         };
-        _eventList.Columns.Add("時刻", 90);
-        _eventList.Columns.Add("種別", 110);
-        _eventList.Columns.Add("詳細", 380);
-        _rightSplit.Panel2.Controls.Add(_eventList);
+        _rightSplit.Panel2.Controls.Add(_summaryLabel);
 
         _statusLabel = new ToolStripStatusLabel("待機中。");
         var statusStrip = new StatusStrip
@@ -362,7 +362,6 @@ public partial class Form1 : Form
         try
         {
             _recorder.Start(options);
-            _eventList.Items.Clear();
             SetStatus($"記録中: {options.Name} / {options.MousePollingRateHz}Hz");
             UpdateButtons();
         }
@@ -385,6 +384,24 @@ public partial class Form1 : Form
         {
             _ = PlayMacroAsync(macro);
         }
+    }
+
+    private void PreviewButtonOnClick(object? sender, EventArgs e)
+    {
+        var macro = GetSelectedMacro();
+        if (macro is null || _recorder.IsRecording || _player.IsPlaying || IsCountingDown)
+        {
+            return;
+        }
+
+        var noise = new NoiseSettings
+        {
+            CoordinateJitterPx = (int)_coordNoiseBox.Value,
+            TimeJitterPercent = (int)_timeNoiseBox.Value,
+            AccelerationJitterPercent = (int)_accelNoiseBox.Value
+        };
+        using var overlay = new PreviewOverlayForm(macro, noise);
+        overlay.ShowDialog(this);
     }
 
     private void DeleteButtonOnClick(object? sender, EventArgs e)
@@ -533,7 +550,7 @@ public partial class Form1 : Form
         _nameBox.Text = macro?.Name ?? "";
         _hotkeyBox.Text = macro?.Hotkey.ToString() ?? "";
         _updatingSelection = false;
-        RefreshEventList(macro);
+        RefreshSummary(macro);
         UpdateButtons();
     }
 
@@ -646,80 +663,20 @@ public partial class Form1 : Form
         }
     }
 
-    private void RefreshEventList(Macro? macro)
+    private void RefreshSummary(Macro? macro)
     {
-        _eventList.BeginUpdate();
-        _eventList.Items.Clear();
-        if (macro is not null)
+        if (macro is null)
         {
-            foreach (var macroEvent in macro.Events)
-            {
-                AddEventListItem(macroEvent);
-            }
-        }
-
-        _eventList.EndUpdate();
-    }
-
-    private void RecorderOnEventRecorded(MacroEvent macroEvent)
-    {
-        if (IsDisposed)
-        {
+            _summaryLabel.Text = "記録データの詳細は表示しません。\r\nプレビューで軌跡を確認できます。";
             return;
         }
 
-        BeginInvoke(() => AddEventListItem(macroEvent));
-    }
-
-    private void AddEventListItem(MacroEvent macroEvent)
-    {
-        var item = new ListViewItem($"{macroEvent.TimeOffsetMs} ms");
-        item.SubItems.Add(FormatEventKind(macroEvent.Kind));
-        item.SubItems.Add(DescribeEvent(macroEvent));
-        _eventList.Items.Add(item);
-        if (_eventList.Items.Count > 0)
-        {
-            _eventList.EnsureVisible(_eventList.Items.Count - 1);
-        }
-    }
-
-    private static string FormatEventKind(MacroEventKind kind)
-    {
-        return kind switch
-        {
-            MacroEventKind.MouseMove => "マウス移動",
-            MacroEventKind.MouseDown => "マウス押下",
-            MacroEventKind.MouseUp => "マウス解放",
-            MacroEventKind.MouseWheel => "ホイール",
-            MacroEventKind.KeyDown => "キー押下",
-            MacroEventKind.KeyUp => "キー解放",
-            _ => kind.ToString()
-        };
-    }
-
-    private static string DescribeEvent(MacroEvent macroEvent)
-    {
-        return macroEvent.Kind switch
-        {
-            MacroEventKind.MouseMove => $"X={macroEvent.X}, Y={macroEvent.Y}",
-            MacroEventKind.MouseDown or MacroEventKind.MouseUp => $"{FormatButton(macroEvent.Button)} X={macroEvent.X}, Y={macroEvent.Y}",
-            MacroEventKind.MouseWheel => $"量={macroEvent.WheelDelta} X={macroEvent.X}, Y={macroEvent.Y}",
-            MacroEventKind.KeyDown or MacroEventKind.KeyUp => $"{macroEvent.KeyCode} X={macroEvent.X}, Y={macroEvent.Y}",
-            _ => ""
-        };
-    }
-
-    private static string FormatButton(RecordedMouseButton button)
-    {
-        return button switch
-        {
-            RecordedMouseButton.Left => "左",
-            RecordedMouseButton.Right => "右",
-            RecordedMouseButton.Middle => "中",
-            RecordedMouseButton.XButton1 => "拡張1",
-            RecordedMouseButton.XButton2 => "拡張2",
-            _ => ""
-        };
+        _summaryLabel.Text =
+            $"名前: {macro.Name}\r\n" +
+            $"イベント数: {macro.Events.Count}\r\n" +
+            $"時間: {macro.DurationMs} ms\r\n\r\n" +
+            "記録データの詳細は表示しません。\r\n" +
+            "プレビューでは赤=完全再現、黄=ノイズ入りを描画します。";
     }
 
     private void RefreshHotkeys()
@@ -749,6 +706,7 @@ public partial class Form1 : Form
         _recordButton.Enabled = !recording && !playing && !countingDown;
         _stopButton.Enabled = recording || playing || countingDown;
         _playButton.Enabled = selected && !recording && !playing && !countingDown;
+        _previewButton.Enabled = selected && !recording && !playing && !countingDown;
         _deleteButton.Enabled = selected && !recording && !playing && !countingDown;
         _saveButton.Enabled = !recording && !playing && !countingDown;
         _loadButton.Enabled = !recording && !playing && !countingDown;
