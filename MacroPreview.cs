@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 
 namespace AutomationTool;
 
@@ -237,6 +238,7 @@ public sealed class PreviewOverlayForm : Form
     {
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
         DrawPath(e.Graphics, _preview.PerfectPath, Color.Red, 3);
         foreach (var noisyPath in _preview.NoisyPaths)
@@ -284,7 +286,8 @@ public sealed class PreviewOverlayForm : Form
     {
         using var pen = new Pen(Color.FromArgb(Math.Min(255, alpha + 40), color), 2);
         using var brush = new SolidBrush(Color.FromArgb(alpha, color));
-        using var textBrush = new SolidBrush(Color.Black);
+        using var textBrush = new SolidBrush(Color.White);
+        using var outlineBrush = new SolidBrush(Color.Black);
 
         foreach (var marker in markers)
         {
@@ -316,9 +319,33 @@ public sealed class PreviewOverlayForm : Form
 
             if (!string.IsNullOrEmpty(marker.Text))
             {
-                graphics.DrawString(marker.Text, _markerFont, textBrush, point.X + 10, point.Y + 4);
+                DrawOutlinedText(graphics, marker.Text, point.X + 10, point.Y + 4, textBrush, outlineBrush);
             }
         }
+    }
+
+    private void DrawOutlinedText(
+        Graphics graphics,
+        string text,
+        int x,
+        int y,
+        Brush textBrush,
+        Brush outlineBrush)
+    {
+        for (var ox = -1; ox <= 1; ox++)
+        {
+            for (var oy = -1; oy <= 1; oy++)
+            {
+                if (ox == 0 && oy == 0)
+                {
+                    continue;
+                }
+
+                graphics.DrawString(text, _markerFont, outlineBrush, x + ox, y + oy);
+            }
+        }
+
+        graphics.DrawString(text, _markerFont, textBrush, x, y);
     }
 
     private void DrawLegend(Graphics graphics)
