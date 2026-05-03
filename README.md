@@ -16,6 +16,7 @@ Lightweight Windows macro recorder/player built with C# WinForms.
   - Click coordinate jitter
   - Timing jitter
   - Acceleration jitter on interpolated mouse movement
+  - Trajectory jitter that bends movement paths while preserving click/key anchors
 - Saves and loads macros as JSON.
 - Registers global macro shortcuts.
 - Emergency stop hotkey: `Ctrl+Alt+Pause`.
@@ -33,6 +34,7 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Mouse movement is interpolated during replay to avoid jumpy point-to-point playback.
 - Click and key event positions are snapped close to their recorded coordinates.
 - Movement noise is applied per movement segment, not per frame, so the pointer does not shake.
+- Trajectory jitter is distance-aware: longer non-click movement gets more visible path variation, while short and drag movements stay restrained.
 - Click anchors are capped to small jitter, and key anchors are not coordinate-jittered.
 - Coordinate jitter should still be kept low for small buttons and precise UI targets.
 - Detailed event rows are not rendered in the UI while recording, to avoid slowing down pointer rendering.

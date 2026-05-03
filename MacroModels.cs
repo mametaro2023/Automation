@@ -105,6 +105,7 @@ public sealed class NoiseSettings
     public int CoordinateJitterPx { get; set; } = 2;
     public int TimeJitterPercent { get; set; } = 5;
     public int AccelerationJitterPercent { get; set; } = 12;
+    public int TrajectoryJitterPx { get; set; } = 16;
 }
 
 public sealed class MacroFile

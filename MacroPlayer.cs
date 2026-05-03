@@ -199,26 +199,38 @@ public sealed class MacroPlayer : IDisposable
         var dx = end.X - start.X;
         var dy = end.Y - start.Y;
         var distance = Math.Sqrt(dx * dx + dy * dy);
-        var strength = Math.Clamp(noise.AccelerationJitterPercent, 0, 50) / 100.0;
+        var accelerationStrength = Math.Clamp(noise.AccelerationJitterPercent, 0, 50) / 100.0;
 
         var normalX = distance > 0 ? -dy / distance : 0.0;
         var normalY = distance > 0 ? dx / distance : 0.0;
-        var maxCurve = isDragging ? 7.0 : 26.0;
+        var maxCurve = isDragging ? 10.0 : 60.0;
         var curveScale = isDragging ? 0.35 : 1.0;
+        var distanceScale = Math.Clamp(distance / 350.0, 0.25, 1.65);
         var amplitude = distance < 24
             ? 0.0
-            : Math.Min(maxCurve, distance * 0.055 * strength * curveScale);
+            : Math.Min(maxCurve, noise.TrajectoryJitterPx * distanceScale * curveScale);
 
         return new MotionProfile
         {
             StartTimeMs = samples[0].TimeMs,
             EndTimeMs = samples[^1].TimeMs,
-            AccelerationBias = (_random.NextDouble() * 2.0 - 1.0) * strength,
-            CurveA = (_random.NextDouble() * 2.0 - 1.0) * amplitude,
-            CurveB = (_random.NextDouble() * 2.0 - 1.0) * amplitude * 0.45,
+            AccelerationBias = (_random.NextDouble() * 2.0 - 1.0) * accelerationStrength,
+            CurveA = RandomSigned(amplitude * 0.55, amplitude),
+            CurveB = RandomSigned(amplitude * 0.18, amplitude * 0.45),
             NormalX = normalX,
             NormalY = normalY
         };
+    }
+
+    private double RandomSigned(double minMagnitude, double maxMagnitude)
+    {
+        if (maxMagnitude <= 0)
+        {
+            return 0;
+        }
+
+        var sign = _random.Next(0, 2) == 0 ? -1.0 : 1.0;
+        return sign * (minMagnitude + _random.NextDouble() * Math.Max(0.0, maxMagnitude - minMagnitude));
     }
 
     private static Point InterpolateNatural(List<TimedPoint> samples, double timeMs, MotionProfile profile)

@@ -24,6 +24,7 @@ public partial class Form1 : Form
     private NumericUpDown _coordNoiseBox = null!;
     private NumericUpDown _timeNoiseBox = null!;
     private NumericUpDown _accelNoiseBox = null!;
+    private NumericUpDown _trajectoryNoiseBox = null!;
     private NumericUpDown _playbackSpeedBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
     private SplitContainer _mainSplit = null!;
@@ -206,6 +207,13 @@ public partial class Form1 : Form
             Maximum = 60,
             Value = 3
         }, 86, 95);
+        AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
+        {
+            Minimum = 10,
+            Maximum = 500,
+            Increment = 10,
+            Value = 100
+        }, 118, 95);
 
         var noiseGroup = CreateGroup("ノイズ");
         settingsPanel.Controls.Add(noiseGroup, 1, 1);
@@ -221,18 +229,17 @@ public partial class Form1 : Form
             Maximum = 50,
             Value = 5
         }, 54, 118);
+        AddLabeledControl(noiseGroup, "軌道ブレ(px)", _trajectoryNoiseBox = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 80,
+            Value = 16
+        }, 86, 118);
         AddLabeledControl(noiseGroup, "加速度(%)", _accelNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 12
-        }, 86, 118);
-        AddLabeledControl(noiseGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
-        {
-            Minimum = 10,
-            Maximum = 500,
-            Increment = 10,
-            Value = 100
         }, 112, 118);
 
         _summaryLabel = new Label
@@ -400,7 +407,8 @@ public partial class Form1 : Form
         {
             CoordinateJitterPx = (int)_coordNoiseBox.Value,
             TimeJitterPercent = (int)_timeNoiseBox.Value,
-            AccelerationJitterPercent = (int)_accelNoiseBox.Value
+            AccelerationJitterPercent = (int)_accelNoiseBox.Value,
+            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
         };
         using var overlay = new PreviewOverlayForm(macro, noise);
         overlay.ShowDialog(this);
@@ -539,7 +547,8 @@ public partial class Form1 : Form
         {
             CoordinateJitterPx = (int)_coordNoiseBox.Value,
             TimeJitterPercent = (int)_timeNoiseBox.Value,
-            AccelerationJitterPercent = (int)_accelNoiseBox.Value
+            AccelerationJitterPercent = (int)_accelNoiseBox.Value,
+            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
         };
         await _player.PlayAsync(macro, noise, (int)_playbackSpeedBox.Value, SetStatus);
         UpdateButtons();

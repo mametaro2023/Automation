@@ -79,10 +79,12 @@ public static class MacroPreviewBuilder
         var length = Math.Sqrt(dx * dx + dy * dy);
         var normalX = length > 0 ? -dy / length : 0;
         var normalY = length > 0 ? dx / length : 0;
-        var accel = Math.Clamp(noise.AccelerationJitterPercent, 0, 50) / 100.0;
-        var amplitude = Math.Min(24.0, Math.Max(0.0, length * 0.025 * accel));
-        var waveA = (random.NextDouble() * 2.0 - 1.0) * amplitude;
-        var waveB = (random.NextDouble() * 2.0 - 1.0) * amplitude * 0.5;
+        var distanceScale = Math.Clamp(length / 350.0, 0.25, 1.65);
+        var amplitude = length < 24
+            ? 0.0
+            : Math.Min(60.0, noise.TrajectoryJitterPx * distanceScale);
+        var waveA = RandomSigned(random, amplitude * 0.55, amplitude);
+        var waveB = RandomSigned(random, amplitude * 0.18, amplitude * 0.45);
 
         for (var i = 0; i < segment.Count; i++)
         {
@@ -93,6 +95,17 @@ public static class MacroPreviewBuilder
                 (int)Math.Round(macroEvent.X + normalX * sideOffset),
                 (int)Math.Round(macroEvent.Y + normalY * sideOffset)));
         }
+    }
+
+    private static double RandomSigned(Random random, double minMagnitude, double maxMagnitude)
+    {
+        if (maxMagnitude <= 0)
+        {
+            return 0;
+        }
+
+        var sign = random.Next(0, 2) == 0 ? -1.0 : 1.0;
+        return sign * (minMagnitude + random.NextDouble() * Math.Max(0.0, maxMagnitude - minMagnitude));
     }
 
     private static bool TryGetPoint(MacroEvent macroEvent, out Point point)
