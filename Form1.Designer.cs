@@ -17,6 +17,12 @@ partial class Form1
         {
             components.Dispose();
         }
+        if (disposing)
+        {
+            _recorder.Dispose();
+            _player.Dispose();
+            _hotkeys.Dispose();
+        }
         base.Dispose(disposing);
     }
 
