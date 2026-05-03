@@ -36,6 +36,8 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Movement noise is applied per movement segment, not per frame, so the pointer does not shake.
 - Trajectory jitter is distance-aware: longer non-click movement gets more visible path variation, while short and drag movements stay restrained.
 - Preview can draw multiple noisy trajectory candidates at once.
+- Preview event markers are drawn as cross marks, with one readable label per event.
+- Basic macro editing supports trimming the beginning and end with timeline sliders and a path preview.
 - Click anchors are capped to small jitter, and key anchors are not coordinate-jittered.
 - Coordinate jitter should still be kept low for small buttons and precise UI targets.
 - Detailed event rows are not rendered in the UI while recording, to avoid slowing down pointer rendering.

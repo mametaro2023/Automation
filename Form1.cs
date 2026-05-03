@@ -10,6 +10,7 @@ public partial class Form1 : Form
     private Button _recordButton = null!;
     private Button _stopButton = null!;
     private Button _playButton = null!;
+    private Button _editButton = null!;
     private Button _deleteButton = null!;
     private Button _saveButton = null!;
     private Button _loadButton = null!;
@@ -108,6 +109,7 @@ public partial class Form1 : Form
         _recordButton = CreateButton("記録", RecordButtonOnClick);
         _stopButton = CreateButton("停止", StopButtonOnClick);
         _playButton = CreateButton("再生", PlayButtonOnClick);
+        _editButton = CreateButton("編集", EditButtonOnClick);
         _deleteButton = CreateButton("削除", DeleteButtonOnClick);
         _saveButton = CreateButton("保存", SaveButtonOnClick);
         _loadButton = CreateButton("読込", LoadButtonOnClick);
@@ -117,6 +119,7 @@ public partial class Form1 : Form
             _recordButton,
             _stopButton,
             _playButton,
+            _editButton,
             _deleteButton,
             _saveButton,
             _loadButton,
@@ -419,6 +422,26 @@ public partial class Form1 : Form
         };
         using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value);
         overlay.ShowDialog(this);
+    }
+
+    private void EditButtonOnClick(object? sender, EventArgs e)
+    {
+        var macro = GetSelectedMacro();
+        if (macro is null || _recorder.IsRecording || _player.IsPlaying || IsCountingDown)
+        {
+            return;
+        }
+
+        using var editor = new MacroTrimEditorForm(macro);
+        if (editor.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        macro.Events = editor.TrimmedEvents;
+        RefreshMacroList(macro.Id);
+        RefreshSummary(macro);
+        SetStatus("マクロをトリミングしました。");
     }
 
     private void DeleteButtonOnClick(object? sender, EventArgs e)
@@ -724,6 +747,7 @@ public partial class Form1 : Form
         _recordButton.Enabled = !recording && !playing && !countingDown;
         _stopButton.Enabled = recording || playing || countingDown;
         _playButton.Enabled = selected && !recording && !playing && !countingDown;
+        _editButton.Enabled = selected && !recording && !playing && !countingDown;
         _previewButton.Enabled = selected && !recording && !playing && !countingDown;
         _deleteButton.Enabled = selected && !recording && !playing && !countingDown;
         _saveButton.Enabled = !recording && !playing && !countingDown;

@@ -246,10 +246,10 @@ public sealed class PreviewOverlayForm : Form
             DrawPath(e.Graphics, noisyPath, Color.Gold, 2, 145);
         }
 
-        DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red);
+        DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red, 230, true);
         foreach (var markers in _preview.NoisyMarkers)
         {
-            DrawMarkers(e.Graphics, markers, Color.Gold, 155);
+            DrawMarkers(e.Graphics, markers, Color.Gold, 130, false);
         }
 
         DrawLegend(e.Graphics);
@@ -282,45 +282,33 @@ public sealed class PreviewOverlayForm : Form
         graphics.DrawLines(pen, points.Select(ToLocal).ToArray());
     }
 
-    private void DrawMarkers(Graphics graphics, List<PreviewMarker> markers, Color color, int alpha = 210)
+    private void DrawMarkers(Graphics graphics, List<PreviewMarker> markers, Color color, int alpha = 210, bool showText = true)
     {
         using var pen = new Pen(Color.FromArgb(Math.Min(255, alpha + 40), color), 2);
-        using var brush = new SolidBrush(Color.FromArgb(alpha, color));
         using var textBrush = new SolidBrush(Color.White);
         using var outlineBrush = new SolidBrush(Color.Black);
 
         foreach (var marker in markers)
         {
             var point = ToLocal(marker.Location);
-            var rect = new Rectangle(point.X - 7, point.Y - 7, 14, 14);
+            DrawCrossMarker(graphics, pen, point, marker.Kind);
 
-            if (marker.Kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp)
-            {
-                var diamond = new[]
-                {
-                    new Point(point.X, point.Y - 9),
-                    new Point(point.X + 9, point.Y),
-                    new Point(point.X, point.Y + 9),
-                    new Point(point.X - 9, point.Y)
-                };
-                graphics.FillPolygon(brush, diamond);
-                graphics.DrawPolygon(pen, diamond);
-            }
-            else if (marker.Kind == MacroEventKind.MouseUp)
-            {
-                graphics.FillRectangle(brush, rect);
-                graphics.DrawRectangle(pen, rect);
-            }
-            else
-            {
-                graphics.FillEllipse(brush, rect);
-                graphics.DrawEllipse(pen, rect);
-            }
-
-            if (!string.IsNullOrEmpty(marker.Text))
+            if (showText && !string.IsNullOrEmpty(marker.Text))
             {
                 DrawOutlinedText(graphics, marker.Text, point.X + 10, point.Y + 4, textBrush, outlineBrush);
             }
+        }
+    }
+
+    private static void DrawCrossMarker(Graphics graphics, Pen pen, Point point, MacroEventKind kind)
+    {
+        var size = kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 9 : 7;
+        graphics.DrawLine(pen, point.X - size, point.Y - size, point.X + size, point.Y + size);
+        graphics.DrawLine(pen, point.X - size, point.Y + size, point.X + size, point.Y - size);
+
+        if (kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown)
+        {
+            graphics.DrawEllipse(pen, point.X - size - 3, point.Y - size - 3, (size + 3) * 2, (size + 3) * 2);
         }
     }
 
