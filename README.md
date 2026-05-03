@@ -53,3 +53,11 @@ dotnet build
 ```powershell
 dotnet run
 ```
+
+## Release Build
+
+```powershell
+.\scripts\publish.ps1 -Version 0.1.0
+```
+
+See [DISTRIBUTING.md](DISTRIBUTING.md) for GitHub Release steps.

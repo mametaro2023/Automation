@@ -6,3 +6,5 @@ obj/
 .codex/
 ui-check.png
 ui-window-check.png
+dist/
+publish/

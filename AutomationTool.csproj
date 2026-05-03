@@ -6,6 +6,14 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>AutomationTool</AssemblyName>
+    <RootNamespace>AutomationTool</RootNamespace>
+    <AssemblyTitle>Automation Tool</AssemblyTitle>
+    <Product>Automation Tool</Product>
+    <Description>Lightweight Windows keyboard and mouse macro recorder/player.</Description>
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
   </PropertyGroup>
 
 </Project>
