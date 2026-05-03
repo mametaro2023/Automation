@@ -24,6 +24,7 @@ public partial class Form1 : Form
     private NumericUpDown _coordNoiseBox = null!;
     private NumericUpDown _timeNoiseBox = null!;
     private NumericUpDown _accelNoiseBox = null!;
+    private NumericUpDown _playbackSpeedBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
     private SplitContainer _mainSplit = null!;
     private SplitContainer _rightSplit = null!;
@@ -226,12 +227,13 @@ public partial class Form1 : Form
             Maximum = 50,
             Value = 12
         }, 86, 118);
-        noiseGroup.Controls.Add(new Label
+        AddLabeledControl(noiseGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
         {
-            Text = "クリック/キー時点は座標を補正します。",
-            Location = new Point(12, 118),
-            Size = new Size(300, 24)
-        });
+            Minimum = 10,
+            Maximum = 500,
+            Increment = 10,
+            Value = 100
+        }, 112, 118);
 
         _summaryLabel = new Label
         {
@@ -539,7 +541,7 @@ public partial class Form1 : Form
             TimeJitterPercent = (int)_timeNoiseBox.Value,
             AccelerationJitterPercent = (int)_accelNoiseBox.Value
         };
-        await _player.PlayAsync(macro, noise, SetStatus);
+        await _player.PlayAsync(macro, noise, (int)_playbackSpeedBox.Value, SetStatus);
         UpdateButtons();
     }
 

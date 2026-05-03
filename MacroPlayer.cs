@@ -7,18 +7,15 @@ namespace AutomationTool;
 
 public sealed class MacroPlayer : IDisposable
 {
-    private const int PlaybackFrameIntervalMs = 4;
+    private const double FrameIntervalMs = 4.0;
     private const int EndpointSnapDistancePx = 8;
 
     private readonly Random _random = new();
-    private readonly Dictionary<RecordedMouseButton, Point> _pressedButtonPositions = new();
-    private readonly HashSet<RecordedMouseButton> _movedWhilePressed = new();
     private CancellationTokenSource? _cts;
-    private Point? _currentMousePosition;
 
     public bool IsPlaying { get; private set; }
 
-    public async Task PlayAsync(Macro macro, NoiseSettings noise, Action<string>? status = null)
+    public async Task PlayAsync(Macro macro, NoiseSettings noise, int speedPercent, Action<string>? status = null)
     {
         if (IsPlaying || macro.Events.Count == 0)
         {
@@ -32,38 +29,8 @@ public sealed class MacroPlayer : IDisposable
 
         try
         {
-            var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
-            long previous = 0;
-            _pressedButtonPositions.Clear();
-            _movedWhilePressed.Clear();
-            _currentMousePosition = Cursor.Position;
-
-            foreach (var macroEvent in events)
-            {
-                token.ThrowIfCancellationRequested();
-
-                var delay = ApplyTimeJitter(macroEvent.TimeOffsetMs - previous, noise.TimeJitterPercent);
-                previous = macroEvent.TimeOffsetMs;
-
-                if (macroEvent.Kind == MacroEventKind.MouseMove)
-                {
-                    await SmoothMoveToAsync(
-                        new Point(macroEvent.X, macroEvent.Y),
-                        delay,
-                        noise.AccelerationJitterPercent,
-                        token);
-
-                    foreach (var button in _pressedButtonPositions.Keys)
-                    {
-                        _movedWhilePressed.Add(button);
-                    }
-                }
-                else
-                {
-                    await PreciseDelayAsync(delay, token);
-                    DispatchInstantEvent(macroEvent, noise);
-                }
-            }
+            var timeline = BuildTimeline(macro, noise, speedPercent);
+            await Task.Run(() => RunTimeline(timeline, token), token);
         }
         catch (OperationCanceledException)
         {
@@ -83,68 +50,196 @@ public sealed class MacroPlayer : IDisposable
         _cts?.Cancel();
     }
 
-    private async Task SmoothMoveToAsync(
-        Point target,
-        long durationMs,
-        int accelerationJitterPercent,
-        CancellationToken token)
+    private List<PlaybackAction> BuildTimeline(Macro macro, NoiseSettings noise, int speedPercent)
     {
-        var start = _currentMousePosition ?? Cursor.Position;
-        if (durationMs <= PlaybackFrameIntervalMs)
+        var timedEvents = BuildTimedEvents(macro, noise, speedPercent);
+        var actions = new List<PlaybackAction>(timedEvents.Count * 2);
+        var currentPosition = Cursor.Position;
+        var currentTimeMs = 0.0;
+        var pressedPositions = new Dictionary<RecordedMouseButton, Point>();
+        var movedWhilePressed = new HashSet<RecordedMouseButton>();
+
+        for (var i = 0; i < timedEvents.Count; i++)
         {
-            MoveMouseExact(target.X, target.Y);
-            _currentMousePosition = target;
+            var timedEvent = timedEvents[i];
+            var macroEvent = timedEvent.Event;
+
+            if (macroEvent.Kind == MacroEventKind.MouseMove)
+            {
+                var run = new List<TimedMacroEvent>();
+                while (i < timedEvents.Count && timedEvents[i].Event.Kind == MacroEventKind.MouseMove)
+                {
+                    run.Add(timedEvents[i]);
+                    i++;
+                }
+
+                i--;
+                AddMouseRun(actions, currentPosition, currentTimeMs, run, noise);
+                currentPosition = new Point(run[^1].Event.X, run[^1].Event.Y);
+                currentTimeMs = run[^1].TimeMs;
+
+                foreach (var button in pressedPositions.Keys)
+                {
+                    movedWhilePressed.Add(button);
+                }
+
+                continue;
+            }
+
+            currentTimeMs = Math.Max(currentTimeMs, timedEvent.TimeMs);
+            switch (macroEvent.Kind)
+            {
+                case MacroEventKind.MouseDown:
+                    var downPoint = CreateClickPoint(macroEvent, noise);
+                    actions.Add(PlaybackAction.MouseButton(currentTimeMs, downPoint, macroEvent.Button, true));
+                    currentPosition = downPoint;
+                    pressedPositions[macroEvent.Button] = downPoint;
+                    movedWhilePressed.Remove(macroEvent.Button);
+                    break;
+                case MacroEventKind.MouseUp:
+                    Point upPoint;
+                    if (pressedPositions.TryGetValue(macroEvent.Button, out var downPosition)
+                        && !movedWhilePressed.Contains(macroEvent.Button))
+                    {
+                        upPoint = downPosition;
+                    }
+                    else
+                    {
+                        upPoint = CreateClickPoint(macroEvent, noise);
+                    }
+
+                    actions.Add(PlaybackAction.MouseButton(currentTimeMs, upPoint, macroEvent.Button, false));
+                    currentPosition = upPoint;
+                    pressedPositions.Remove(macroEvent.Button);
+                    movedWhilePressed.Remove(macroEvent.Button);
+                    break;
+                case MacroEventKind.MouseWheel:
+                    var wheelPoint = new Point(macroEvent.X, macroEvent.Y);
+                    actions.Add(PlaybackAction.MouseWheel(currentTimeMs, wheelPoint, macroEvent.WheelDelta));
+                    currentPosition = wheelPoint;
+                    break;
+                case MacroEventKind.KeyDown:
+                case MacroEventKind.KeyUp:
+                    var keyPoint = GetKeySnapPoint(macroEvent, currentPosition);
+                    if (keyPoint is not null)
+                    {
+                        currentPosition = keyPoint.Value;
+                    }
+
+                    actions.Add(PlaybackAction.Key(currentTimeMs, keyPoint, macroEvent.KeyCode, macroEvent.Kind == MacroEventKind.KeyDown));
+                    break;
+            }
+        }
+
+        return actions
+            .OrderBy(action => action.TimeMs)
+            .ThenBy(action => action.Priority)
+            .ToList();
+    }
+
+    private List<TimedMacroEvent> BuildTimedEvents(Macro macro, NoiseSettings noise, int speedPercent)
+    {
+        var speed = Math.Clamp(speedPercent, 10, 500) / 100.0;
+        var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
+        var timedEvents = new List<TimedMacroEvent>(events.Count);
+        long previousOriginalMs = 0;
+        double playbackTimeMs = 0;
+
+        foreach (var macroEvent in events)
+        {
+            var delay = macroEvent.TimeOffsetMs - previousOriginalMs;
+            previousOriginalMs = macroEvent.TimeOffsetMs;
+            playbackTimeMs += ApplyTimeJitter(delay, noise.TimeJitterPercent) / speed;
+            timedEvents.Add(new TimedMacroEvent(playbackTimeMs, macroEvent));
+        }
+
+        return timedEvents;
+    }
+
+    private void AddMouseRun(
+        List<PlaybackAction> actions,
+        Point startPosition,
+        double startTimeMs,
+        List<TimedMacroEvent> run,
+        NoiseSettings noise)
+    {
+        if (run.Count == 0)
+        {
             return;
         }
 
-        var curve = CreateMotionCurve(accelerationJitterPercent);
-        var stopwatch = Stopwatch.StartNew();
-        var lastPoint = start;
-
-        while (stopwatch.ElapsedMilliseconds < durationMs)
+        var samples = new List<TimedPoint>(run.Count + 1)
         {
-            token.ThrowIfCancellationRequested();
+            new(startTimeMs, startPosition)
+        };
+        samples.AddRange(run.Select(item => new TimedPoint(item.TimeMs, new Point(item.Event.X, item.Event.Y))));
 
-            var progress = Math.Clamp(stopwatch.ElapsedMilliseconds / (double)durationMs, 0.0, 1.0);
-            var eased = curve(progress);
-            var next = new Point(
-                (int)Math.Round(start.X + (target.X - start.X) * eased),
-                (int)Math.Round(start.Y + (target.Y - start.Y) * eased));
-
-            if (next != lastPoint)
-            {
-                MoveMouseExact(next.X, next.Y);
-                lastPoint = next;
-            }
-
-            await Task.Delay(PlaybackFrameIntervalMs, token);
+        var endTimeMs = samples[^1].TimeMs;
+        if (endTimeMs <= startTimeMs)
+        {
+            actions.Add(PlaybackAction.MouseMove(endTimeMs, samples[^1].Point));
+            return;
         }
 
-        MoveMouseExact(target.X, target.Y);
-        _currentMousePosition = target;
+        var nextFrame = Math.Ceiling((startTimeMs + 0.001) / FrameIntervalMs) * FrameIntervalMs;
+        for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += FrameIntervalMs)
+        {
+            actions.Add(PlaybackAction.MouseMove(timeMs, Interpolate(samples, timeMs, noise.AccelerationJitterPercent)));
+        }
+
+        actions.Add(PlaybackAction.MouseMove(endTimeMs, samples[^1].Point));
     }
 
-    private Func<double, double> CreateMotionCurve(int accelerationJitterPercent)
+    private Point Interpolate(List<TimedPoint> samples, double timeMs, int accelerationJitterPercent)
+    {
+        if (samples.Count == 1)
+        {
+            return samples[0].Point;
+        }
+
+        var index = 0;
+        while (index < samples.Count - 2 && samples[index + 1].TimeMs < timeMs)
+        {
+            index++;
+        }
+
+        var previous = samples[Math.Max(0, index - 1)];
+        var current = samples[index];
+        var next = samples[Math.Min(samples.Count - 1, index + 1)];
+        var afterNext = samples[Math.Min(samples.Count - 1, index + 2)];
+        var span = Math.Max(0.001, next.TimeMs - current.TimeMs);
+        var t = Math.Clamp((timeMs - current.TimeMs) / span, 0.0, 1.0);
+        var easedT = ApplyAccelerationJitter(t, accelerationJitterPercent);
+
+        return new Point(
+            (int)Math.Round(Catmull(previous.Point.X, current.Point.X, next.Point.X, afterNext.Point.X, easedT)),
+            (int)Math.Round(Catmull(previous.Point.Y, current.Point.Y, next.Point.Y, afterNext.Point.Y, easedT)));
+    }
+
+    private double ApplyAccelerationJitter(double t, int accelerationJitterPercent)
     {
         if (accelerationJitterPercent <= 0)
         {
-            return SmoothStep;
+            return SmoothStep(t);
         }
 
         var jitter = Math.Clamp(accelerationJitterPercent, 0, 50) / 100.0;
         var accelerationBias = (_random.NextDouble() * 2.0 - 1.0) * jitter;
-        var midPush = (_random.NextDouble() * 2.0 - 1.0) * jitter * 0.35;
+        var baseCurve = SmoothStep(t);
+        var accelerationCurve = accelerationBias >= 0
+            ? Math.Pow(t, 1.0 + accelerationBias)
+            : 1.0 - Math.Pow(1.0 - t, 1.0 - accelerationBias);
+        return Math.Clamp(baseCurve * 0.75 + accelerationCurve * 0.25, 0.0, 1.0);
+    }
 
-        return t =>
-        {
-            var baseCurve = SmoothStep(t);
-            var accelerationCurve = accelerationBias >= 0
-                ? Math.Pow(t, 1.0 + accelerationBias)
-                : 1.0 - Math.Pow(1.0 - t, 1.0 - accelerationBias);
-            var blended = baseCurve * 0.72 + accelerationCurve * 0.28;
-            var middleOnly = Math.Sin(Math.PI * t) * midPush;
-            return Math.Clamp(blended + middleOnly, 0.0, 1.0);
-        };
+    private static double Catmull(double p0, double p1, double p2, double p3, double t)
+    {
+        var t2 = t * t;
+        var t3 = t2 * t;
+        return 0.5 * ((2.0 * p1)
+            + (-p0 + p2) * t
+            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
     }
 
     private static double SmoothStep(double t)
@@ -152,25 +247,31 @@ public sealed class MacroPlayer : IDisposable
         return t * t * (3.0 - 2.0 * t);
     }
 
-    private static async Task PreciseDelayAsync(long delayMs, CancellationToken token)
+    private Point CreateClickPoint(MacroEvent macroEvent, NoiseSettings noise)
     {
-        if (delayMs <= 0)
+        var x = macroEvent.X;
+        var y = macroEvent.Y;
+        if (noise.CoordinateJitterPx > 0)
         {
-            return;
+            x += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
+            y += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
         }
 
-        if (delayMs > 8)
+        return new Point(x, y);
+    }
+
+    private static Point? GetKeySnapPoint(MacroEvent macroEvent, Point currentPosition)
+    {
+        if (macroEvent.X == 0 && macroEvent.Y == 0)
         {
-            await Task.Delay((int)Math.Min(delayMs - 4, int.MaxValue), token);
+            return null;
         }
 
-        var stopwatch = Stopwatch.StartNew();
-        var remaining = Math.Min(delayMs, 4);
-        while (stopwatch.ElapsedMilliseconds < remaining)
-        {
-            token.ThrowIfCancellationRequested();
-            await Task.Yield();
-        }
+        var dx = currentPosition.X - macroEvent.X;
+        var dy = currentPosition.Y - macroEvent.Y;
+        return dx * dx + dy * dy > EndpointSnapDistancePx * EndpointSnapDistancePx
+            ? new Point(macroEvent.X, macroEvent.Y)
+            : null;
     }
 
     private long ApplyTimeJitter(long delay, int percent)
@@ -184,77 +285,80 @@ public sealed class MacroPlayer : IDisposable
         return Math.Max(0, (long)Math.Round(delay * factor));
     }
 
-    private void DispatchInstantEvent(MacroEvent macroEvent, NoiseSettings noise)
+    private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token)
     {
-        switch (macroEvent.Kind)
+        var stopwatch = Stopwatch.StartNew();
+        foreach (var action in timeline)
         {
-            case MacroEventKind.MouseDown:
-                var downPoint = MoveMouseWithClickJitter(macroEvent.X, macroEvent.Y, noise);
-                _currentMousePosition = downPoint;
-                _pressedButtonPositions[macroEvent.Button] = downPoint;
-                _movedWhilePressed.Remove(macroEvent.Button);
-                SendMouseButton(macroEvent.Button, true);
-                break;
-            case MacroEventKind.MouseUp:
-                if (_pressedButtonPositions.TryGetValue(macroEvent.Button, out var downPosition)
-                    && !_movedWhilePressed.Contains(macroEvent.Button))
-                {
-                    MoveMouseExact(downPosition.X, downPosition.Y);
-                    _currentMousePosition = downPosition;
-                }
-                else
-                {
-                    var upPoint = MoveMouseWithClickJitter(macroEvent.X, macroEvent.Y, noise);
-                    _currentMousePosition = upPoint;
-                }
-
-                SendMouseButton(macroEvent.Button, false);
-                _pressedButtonPositions.Remove(macroEvent.Button);
-                _movedWhilePressed.Remove(macroEvent.Button);
-                break;
-            case MacroEventKind.MouseWheel:
-                MoveMouseExact(macroEvent.X, macroEvent.Y);
-                _currentMousePosition = new Point(macroEvent.X, macroEvent.Y);
-                SendMouseWheel(macroEvent.WheelDelta);
-                break;
-            case MacroEventKind.KeyDown:
-                SnapToKeyPositionIfNeeded(macroEvent);
-                SendKey(macroEvent.KeyCode, true);
-                break;
-            case MacroEventKind.KeyUp:
-                SnapToKeyPositionIfNeeded(macroEvent);
-                SendKey(macroEvent.KeyCode, false);
-                break;
+            WaitUntil(stopwatch, action.TimeMs, token);
+            Execute(action);
         }
     }
 
-    private void SnapToKeyPositionIfNeeded(MacroEvent macroEvent)
+    private static void WaitUntil(Stopwatch stopwatch, double targetMs, CancellationToken token)
     {
-        if (macroEvent.X == 0 && macroEvent.Y == 0)
+        var targetTicks = (long)Math.Round(targetMs * Stopwatch.Frequency / 1000.0);
+        while (true)
         {
-            return;
-        }
+            token.ThrowIfCancellationRequested();
+            var remainingTicks = targetTicks - stopwatch.ElapsedTicks;
+            if (remainingTicks <= 0)
+            {
+                return;
+            }
 
-        var current = _currentMousePosition ?? Cursor.Position;
-        var dx = current.X - macroEvent.X;
-        var dy = current.Y - macroEvent.Y;
-        if (dx * dx + dy * dy > EndpointSnapDistancePx * EndpointSnapDistancePx)
-        {
-            MoveMouseExact(macroEvent.X, macroEvent.Y);
-            _currentMousePosition = new Point(macroEvent.X, macroEvent.Y);
+            var remainingMs = remainingTicks * 1000.0 / Stopwatch.Frequency;
+            if (remainingMs > 5.0)
+            {
+                Thread.Sleep(Math.Max(1, (int)remainingMs - 2));
+            }
+            else if (remainingMs > 1.0)
+            {
+                Thread.Sleep(0);
+            }
+            else
+            {
+                Thread.SpinWait(80);
+            }
         }
     }
 
-    private Point MoveMouseWithClickJitter(int x, int y, NoiseSettings noise)
+    private static void Execute(PlaybackAction action)
     {
-        if (noise.CoordinateJitterPx > 0)
+        switch (action.Kind)
         {
-            x += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
-            y += _random.Next(-noise.CoordinateJitterPx, noise.CoordinateJitterPx + 1);
-        }
+            case PlaybackActionKind.MouseMove:
+                MoveMouseExact(action.Point.X, action.Point.Y);
+                break;
+            case PlaybackActionKind.MouseDown:
+                MoveMouseExact(action.Point.X, action.Point.Y);
+                SendMouseButton(action.Button, true);
+                break;
+            case PlaybackActionKind.MouseUp:
+                MoveMouseExact(action.Point.X, action.Point.Y);
+                SendMouseButton(action.Button, false);
+                break;
+            case PlaybackActionKind.MouseWheel:
+                MoveMouseExact(action.Point.X, action.Point.Y);
+                SendMouseWheel(action.WheelDelta);
+                break;
+            case PlaybackActionKind.KeyDown:
+                if (action.Point is { X: not 0 } or { Y: not 0 })
+                {
+                    MoveMouseExact(action.Point.X, action.Point.Y);
+                }
 
-        MoveMouseExact(x, y);
-        return new Point(x, y);
+                SendKey(action.KeyCode, true);
+                break;
+            case PlaybackActionKind.KeyUp:
+                if (action.Point is { X: not 0 } or { Y: not 0 })
+                {
+                    MoveMouseExact(action.Point.X, action.Point.Y);
+                }
+
+                SendKey(action.KeyCode, false);
+                break;
+        }
     }
 
     private static void MoveMouseExact(int x, int y)
@@ -346,5 +450,60 @@ public sealed class MacroPlayer : IDisposable
     {
         Stop();
         _cts?.Dispose();
+    }
+
+    private sealed record TimedMacroEvent(double TimeMs, MacroEvent Event);
+    private sealed record TimedPoint(double TimeMs, Point Point);
+
+    private enum PlaybackActionKind
+    {
+        MouseMove,
+        MouseDown,
+        MouseUp,
+        MouseWheel,
+        KeyDown,
+        KeyUp
+    }
+
+    private sealed class PlaybackAction
+    {
+        public double TimeMs { get; private init; }
+        public PlaybackActionKind Kind { get; private init; }
+        public Point Point { get; private init; }
+        public RecordedMouseButton Button { get; private init; }
+        public int WheelDelta { get; private init; }
+        public Keys KeyCode { get; private init; }
+        public int Priority => Kind == PlaybackActionKind.MouseMove ? 0 : 1;
+
+        public static PlaybackAction MouseMove(double timeMs, Point point) => new()
+        {
+            TimeMs = timeMs,
+            Kind = PlaybackActionKind.MouseMove,
+            Point = point
+        };
+
+        public static PlaybackAction MouseButton(double timeMs, Point point, RecordedMouseButton button, bool down) => new()
+        {
+            TimeMs = timeMs,
+            Kind = down ? PlaybackActionKind.MouseDown : PlaybackActionKind.MouseUp,
+            Point = point,
+            Button = button
+        };
+
+        public static PlaybackAction MouseWheel(double timeMs, Point point, int delta) => new()
+        {
+            TimeMs = timeMs,
+            Kind = PlaybackActionKind.MouseWheel,
+            Point = point,
+            WheelDelta = delta
+        };
+
+        public static PlaybackAction Key(double timeMs, Point? point, Keys keyCode, bool down) => new()
+        {
+            TimeMs = timeMs,
+            Kind = down ? PlaybackActionKind.KeyDown : PlaybackActionKind.KeyUp,
+            Point = point ?? Point.Empty,
+            KeyCode = keyCode
+        };
     }
 }

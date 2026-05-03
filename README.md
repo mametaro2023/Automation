@@ -10,6 +10,8 @@ Lightweight Windows macro recorder/player built with C# WinForms.
   - Standard
   - High
 - Replays input with `SendInput`.
+- Builds a playback timeline before replay and sends movement frames from a high-precision loop.
+- Supports playback speed changes from slow motion to fast replay.
 - Adds small configurable replay jitter:
   - Click coordinate jitter
   - Timing jitter
