@@ -137,12 +137,15 @@ public sealed class InputRecorder : IDisposable
             if ((info.Flags & NativeMethods.LLKHF_INJECTED) == 0)
             {
                 var message = wParam.ToInt32();
+                var point = Cursor.Position;
                 if (message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN)
                 {
                     Record(new MacroEvent
                     {
                         Kind = MacroEventKind.KeyDown,
-                        KeyCode = (Keys)info.VkCode
+                        KeyCode = (Keys)info.VkCode,
+                        X = point.X,
+                        Y = point.Y
                     });
                 }
                 else if (message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP)
@@ -150,7 +153,9 @@ public sealed class InputRecorder : IDisposable
                     Record(new MacroEvent
                     {
                         Kind = MacroEventKind.KeyUp,
-                        KeyCode = (Keys)info.VkCode
+                        KeyCode = (Keys)info.VkCode,
+                        X = point.X,
+                        Y = point.Y
                     });
                 }
             }

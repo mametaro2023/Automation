@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -6,10 +7,14 @@ namespace AutomationTool;
 
 public sealed class MacroPlayer : IDisposable
 {
+    private const int PlaybackFrameIntervalMs = 4;
+    private const int EndpointSnapDistancePx = 8;
+
     private readonly Random _random = new();
     private readonly Dictionary<RecordedMouseButton, Point> _pressedButtonPositions = new();
     private readonly HashSet<RecordedMouseButton> _movedWhilePressed = new();
     private CancellationTokenSource? _cts;
+    private Point? _currentMousePosition;
 
     public bool IsPlaying { get; private set; }
 
@@ -27,22 +32,37 @@ public sealed class MacroPlayer : IDisposable
 
         try
         {
+            var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
             long previous = 0;
             _pressedButtonPositions.Clear();
             _movedWhilePressed.Clear();
-            foreach (var macroEvent in macro.Events.OrderBy(e => e.TimeOffsetMs))
+            _currentMousePosition = Cursor.Position;
+
+            foreach (var macroEvent in events)
             {
                 token.ThrowIfCancellationRequested();
 
-                var delay = macroEvent.TimeOffsetMs - previous;
+                var delay = ApplyTimeJitter(macroEvent.TimeOffsetMs - previous, noise.TimeJitterPercent);
                 previous = macroEvent.TimeOffsetMs;
-                delay = ApplyTimeJitter(delay, noise.TimeJitterPercent);
-                if (delay > 0)
-                {
-                    await Task.Delay((int)Math.Min(delay, int.MaxValue), token);
-                }
 
-                Dispatch(macroEvent, noise);
+                if (macroEvent.Kind == MacroEventKind.MouseMove)
+                {
+                    await SmoothMoveToAsync(
+                        new Point(macroEvent.X, macroEvent.Y),
+                        delay,
+                        noise.AccelerationJitterPercent,
+                        token);
+
+                    foreach (var button in _pressedButtonPositions.Keys)
+                    {
+                        _movedWhilePressed.Add(button);
+                    }
+                }
+                else
+                {
+                    await PreciseDelayAsync(delay, token);
+                    DispatchInstantEvent(macroEvent, noise);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -63,6 +83,96 @@ public sealed class MacroPlayer : IDisposable
         _cts?.Cancel();
     }
 
+    private async Task SmoothMoveToAsync(
+        Point target,
+        long durationMs,
+        int accelerationJitterPercent,
+        CancellationToken token)
+    {
+        var start = _currentMousePosition ?? Cursor.Position;
+        if (durationMs <= PlaybackFrameIntervalMs)
+        {
+            MoveMouseExact(target.X, target.Y);
+            _currentMousePosition = target;
+            return;
+        }
+
+        var curve = CreateMotionCurve(accelerationJitterPercent);
+        var stopwatch = Stopwatch.StartNew();
+        var lastPoint = start;
+
+        while (stopwatch.ElapsedMilliseconds < durationMs)
+        {
+            token.ThrowIfCancellationRequested();
+
+            var progress = Math.Clamp(stopwatch.ElapsedMilliseconds / (double)durationMs, 0.0, 1.0);
+            var eased = curve(progress);
+            var next = new Point(
+                (int)Math.Round(start.X + (target.X - start.X) * eased),
+                (int)Math.Round(start.Y + (target.Y - start.Y) * eased));
+
+            if (next != lastPoint)
+            {
+                MoveMouseExact(next.X, next.Y);
+                lastPoint = next;
+            }
+
+            await Task.Delay(PlaybackFrameIntervalMs, token);
+        }
+
+        MoveMouseExact(target.X, target.Y);
+        _currentMousePosition = target;
+    }
+
+    private Func<double, double> CreateMotionCurve(int accelerationJitterPercent)
+    {
+        if (accelerationJitterPercent <= 0)
+        {
+            return SmoothStep;
+        }
+
+        var jitter = Math.Clamp(accelerationJitterPercent, 0, 50) / 100.0;
+        var accelerationBias = (_random.NextDouble() * 2.0 - 1.0) * jitter;
+        var midPush = (_random.NextDouble() * 2.0 - 1.0) * jitter * 0.35;
+
+        return t =>
+        {
+            var baseCurve = SmoothStep(t);
+            var accelerationCurve = accelerationBias >= 0
+                ? Math.Pow(t, 1.0 + accelerationBias)
+                : 1.0 - Math.Pow(1.0 - t, 1.0 - accelerationBias);
+            var blended = baseCurve * 0.72 + accelerationCurve * 0.28;
+            var middleOnly = Math.Sin(Math.PI * t) * midPush;
+            return Math.Clamp(blended + middleOnly, 0.0, 1.0);
+        };
+    }
+
+    private static double SmoothStep(double t)
+    {
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    private static async Task PreciseDelayAsync(long delayMs, CancellationToken token)
+    {
+        if (delayMs <= 0)
+        {
+            return;
+        }
+
+        if (delayMs > 8)
+        {
+            await Task.Delay((int)Math.Min(delayMs - 4, int.MaxValue), token);
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var remaining = Math.Min(delayMs, 4);
+        while (stopwatch.ElapsedMilliseconds < remaining)
+        {
+            token.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
+    }
+
     private long ApplyTimeJitter(long delay, int percent)
     {
         if (delay <= 0 || percent <= 0)
@@ -74,19 +184,13 @@ public sealed class MacroPlayer : IDisposable
         return Math.Max(0, (long)Math.Round(delay * factor));
     }
 
-    private void Dispatch(MacroEvent macroEvent, NoiseSettings noise)
+    private void DispatchInstantEvent(MacroEvent macroEvent, NoiseSettings noise)
     {
         switch (macroEvent.Kind)
         {
-            case MacroEventKind.MouseMove:
-                MoveMouseExact(macroEvent.X, macroEvent.Y);
-                foreach (var button in _pressedButtonPositions.Keys)
-                {
-                    _movedWhilePressed.Add(button);
-                }
-                break;
             case MacroEventKind.MouseDown:
-                var downPoint = MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                var downPoint = MoveMouseWithClickJitter(macroEvent.X, macroEvent.Y, noise);
+                _currentMousePosition = downPoint;
                 _pressedButtonPositions[macroEvent.Button] = downPoint;
                 _movedWhilePressed.Remove(macroEvent.Button);
                 SendMouseButton(macroEvent.Button, true);
@@ -96,10 +200,12 @@ public sealed class MacroPlayer : IDisposable
                     && !_movedWhilePressed.Contains(macroEvent.Button))
                 {
                     MoveMouseExact(downPosition.X, downPosition.Y);
+                    _currentMousePosition = downPosition;
                 }
                 else
                 {
-                    MoveMouse(macroEvent.X, macroEvent.Y, noise);
+                    var upPoint = MoveMouseWithClickJitter(macroEvent.X, macroEvent.Y, noise);
+                    _currentMousePosition = upPoint;
                 }
 
                 SendMouseButton(macroEvent.Button, false);
@@ -108,18 +214,38 @@ public sealed class MacroPlayer : IDisposable
                 break;
             case MacroEventKind.MouseWheel:
                 MoveMouseExact(macroEvent.X, macroEvent.Y);
+                _currentMousePosition = new Point(macroEvent.X, macroEvent.Y);
                 SendMouseWheel(macroEvent.WheelDelta);
                 break;
             case MacroEventKind.KeyDown:
+                SnapToKeyPositionIfNeeded(macroEvent);
                 SendKey(macroEvent.KeyCode, true);
                 break;
             case MacroEventKind.KeyUp:
+                SnapToKeyPositionIfNeeded(macroEvent);
                 SendKey(macroEvent.KeyCode, false);
                 break;
         }
     }
 
-    private Point MoveMouse(int x, int y, NoiseSettings noise)
+    private void SnapToKeyPositionIfNeeded(MacroEvent macroEvent)
+    {
+        if (macroEvent.X == 0 && macroEvent.Y == 0)
+        {
+            return;
+        }
+
+        var current = _currentMousePosition ?? Cursor.Position;
+        var dx = current.X - macroEvent.X;
+        var dy = current.Y - macroEvent.Y;
+        if (dx * dx + dy * dy > EndpointSnapDistancePx * EndpointSnapDistancePx)
+        {
+            MoveMouseExact(macroEvent.X, macroEvent.Y);
+            _currentMousePosition = new Point(macroEvent.X, macroEvent.Y);
+        }
+    }
+
+    private Point MoveMouseWithClickJitter(int x, int y, NoiseSettings noise)
     {
         if (noise.CoordinateJitterPx > 0)
         {

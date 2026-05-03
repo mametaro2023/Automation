@@ -22,7 +22,7 @@ public partial class Form1 : Form
     private NumericUpDown _countdownBox = null!;
     private NumericUpDown _coordNoiseBox = null!;
     private NumericUpDown _timeNoiseBox = null!;
-    private StatusStrip _statusStrip = null!;
+    private NumericUpDown _accelNoiseBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
     private SplitContainer _mainSplit = null!;
     private SplitContainer _rightSplit = null!;
@@ -75,7 +75,7 @@ public partial class Form1 : Form
     {
         Text = "Automation Tool";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(920, 600);
+        MinimumSize = new Size(920, 560);
         ClientSize = new Size(1040, 640);
         Font = new Font("MS UI Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
         Resize += (_, _) => AdjustSplitters();
@@ -147,8 +147,9 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
-            Panel1MinSize = 100,
-            Panel2MinSize = 100
+            Panel1MinSize = 110,
+            Panel2MinSize = 100,
+            FixedPanel = FixedPanel.Panel1
         };
         _mainSplit.Panel2.Controls.Add(_rightSplit);
 
@@ -161,22 +162,22 @@ public partial class Form1 : Form
         };
         settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 290));
         settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
         _rightSplit.Panel1.Controls.Add(settingsPanel);
 
         var macroGroup = CreateGroup("マクロ");
         settingsPanel.Controls.Add(macroGroup, 0, 0);
         settingsPanel.SetRowSpan(macroGroup, 2);
-        AddLabeledControl(macroGroup, "名前", _nameBox = new TextBox(), 24);
+        AddLabeledControl(macroGroup, "名前", _nameBox = new TextBox(), 24, 105);
         _nameBox.TextChanged += NameBoxOnTextChanged;
-        AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58);
+        AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58, 105);
         _hotkeyBox.KeyDown += HotkeyBoxOnKeyDown;
         macroGroup.Controls.Add(new Label
         {
             Text = "入力欄を選択してキーを押す（削除で解除）",
-            Location = new Point(12, 94),
-            Size = new Size(250, 32)
+            Location = new Point(12, 92),
+            Size = new Size(260, 36)
         });
 
         var recordGroup = CreateGroup("記録");
@@ -188,20 +189,20 @@ public partial class Form1 : Form
         _densityBox.Items.AddRange(new object[] { "軽量", "標準", "高精度" });
         _densityBox.SelectedIndex = 1;
         _densityBox.SelectedIndexChanged += (_, _) => ApplyDensityDefaults();
-        AddLabeledControl(recordGroup, "密度", _densityBox, 22);
+        AddLabeledControl(recordGroup, "密度", _densityBox, 22, 95);
         AddLabeledControl(recordGroup, "ポーリングHz", _pollingRateBox = new NumericUpDown
         {
             Minimum = 10,
             Maximum = 1000,
             Increment = 10,
             Value = 200
-        }, 54);
+        }, 54, 95);
         AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 60,
             Value = 3
-        }, 86);
+        }, 86, 95);
 
         var noiseGroup = CreateGroup("ノイズ");
         settingsPanel.Controls.Add(noiseGroup, 1, 1);
@@ -210,18 +211,24 @@ public partial class Form1 : Form
             Minimum = 0,
             Maximum = 20,
             Value = 2
-        }, 28);
+        }, 22, 118);
         AddLabeledControl(noiseGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 5
-        }, 62);
+        }, 54, 118);
+        AddLabeledControl(noiseGroup, "加速度(%)", _accelNoiseBox = new NumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 50,
+            Value = 12
+        }, 86, 118);
         noiseGroup.Controls.Add(new Label
         {
-            Text = "移動中の座標にはノイズを載せません。",
-            Location = new Point(12, 94),
-            Size = new Size(260, 22)
+            Text = "クリック/キー時点は座標を補正します。",
+            Location = new Point(12, 118),
+            Size = new Size(300, 24)
         });
 
         _eventList = new ListView
@@ -236,12 +243,12 @@ public partial class Form1 : Form
         _rightSplit.Panel2.Controls.Add(_eventList);
 
         _statusLabel = new ToolStripStatusLabel("待機中。");
-        _statusStrip = new StatusStrip
+        var statusStrip = new StatusStrip
         {
             Dock = DockStyle.Fill
         };
-        _statusStrip.Items.Add(_statusLabel);
-        root.Controls.Add(_statusStrip, 0, 2);
+        statusStrip.Items.Add(_statusLabel);
+        root.Controls.Add(statusStrip, 0, 2);
 
         UpdateButtons();
     }
@@ -262,9 +269,9 @@ public partial class Form1 : Form
 
         if (_rightSplit is not null && _rightSplit.Height > 0)
         {
-            const int desiredTop = 220;
-            const int desiredTopMin = 190;
-            const int desiredBottomMin = 180;
+            const int desiredTop = 310;
+            const int desiredTopMin = 300;
+            const int desiredBottomMin = 160;
             var maxDistance = _rightSplit.Height - desiredBottomMin - _rightSplit.SplitterWidth;
             if (maxDistance >= desiredTopMin)
             {
@@ -295,16 +302,16 @@ public partial class Form1 : Form
         };
     }
 
-    private static void AddLabeledControl(Control parent, string labelText, Control control, int y)
+    private static void AddLabeledControl(Control parent, string labelText, Control control, int y, int labelWidth)
     {
         parent.Controls.Add(new Label
         {
             Text = labelText,
             Location = new Point(12, y + 4),
-            Size = new Size(105, 20)
+            Size = new Size(labelWidth, 20)
         });
-        control.Location = new Point(122, y);
-        control.Size = new Size(Math.Max(90, parent.Width - 138), 23);
+        control.Location = new Point(18 + labelWidth, y);
+        control.Size = new Size(Math.Max(80, parent.Width - labelWidth - 36), 23);
         control.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         parent.Controls.Add(control);
     }
@@ -512,7 +519,8 @@ public partial class Form1 : Form
         var noise = new NoiseSettings
         {
             CoordinateJitterPx = (int)_coordNoiseBox.Value,
-            TimeJitterPercent = (int)_timeNoiseBox.Value
+            TimeJitterPercent = (int)_timeNoiseBox.Value,
+            AccelerationJitterPercent = (int)_accelNoiseBox.Value
         };
         await _player.PlayAsync(macro, noise, SetStatus);
         UpdateButtons();
@@ -696,7 +704,7 @@ public partial class Form1 : Form
             MacroEventKind.MouseMove => $"X={macroEvent.X}, Y={macroEvent.Y}",
             MacroEventKind.MouseDown or MacroEventKind.MouseUp => $"{FormatButton(macroEvent.Button)} X={macroEvent.X}, Y={macroEvent.Y}",
             MacroEventKind.MouseWheel => $"量={macroEvent.WheelDelta} X={macroEvent.X}, Y={macroEvent.Y}",
-            MacroEventKind.KeyDown or MacroEventKind.KeyUp => macroEvent.KeyCode.ToString(),
+            MacroEventKind.KeyDown or MacroEventKind.KeyUp => $"{macroEvent.KeyCode} X={macroEvent.X}, Y={macroEvent.Y}",
             _ => ""
         };
     }

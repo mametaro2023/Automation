@@ -13,6 +13,7 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Adds small configurable replay jitter:
   - Click coordinate jitter
   - Timing jitter
+  - Acceleration jitter on interpolated mouse movement
 - Saves and loads macros as JSON.
 - Registers global macro shortcuts.
 - Emergency stop hotkey: `Ctrl+Alt+Pause`.
@@ -24,6 +25,8 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Administrative windows may require running this tool as administrator.
 - UAC secure desktop cannot be automated by normal desktop apps.
 - Coordinate jitter is applied to click/button targets, not every mouse move.
+- Mouse movement is interpolated during replay to avoid jumpy point-to-point playback.
+- Click and key event positions are snapped close to their recorded coordinates.
 - Coordinate jitter should still be kept low for small buttons and precise UI targets.
 
 ## Build
