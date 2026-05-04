@@ -20,6 +20,8 @@ public sealed class MacroTrimEditorForm : Form
     private readonly Button _applyPositionButton = new();
     private readonly Button _okButton = new();
     private readonly Button _cancelButton = new();
+    private readonly Stack<EditorSnapshot> _undoStack = new();
+    private readonly Stack<EditorSnapshot> _redoStack = new();
     private bool _updatingSelection;
     private int? _selectedEventIndex;
 
@@ -53,6 +55,27 @@ public sealed class MacroTrimEditorForm : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if (e.Control && e.Shift && e.KeyCode == Keys.Z)
+        {
+            Redo();
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (e.Control && e.KeyCode == Keys.Z)
+        {
+            Undo();
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (e.Control && e.KeyCode == Keys.Y)
+        {
+            Redo();
+            e.SuppressKeyPress = true;
+            return;
+        }
+
         if (e.KeyCode == Keys.Escape)
         {
             DialogResult = DialogResult.Cancel;
@@ -107,7 +130,7 @@ public sealed class MacroTrimEditorForm : Form
         });
         header.Controls.Add(new Label
         {
-            Text = "軌道上の×または一覧を選択して、不要イベント削除・待ち時間・座標を調整",
+            Text = "×または一覧で選択。押下/解放はペア範囲を強調し、削除もペア単位。Ctrl+Z / Ctrl+Y 対応",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.FromArgb(205, 210, 218)
@@ -280,7 +303,7 @@ public sealed class MacroTrimEditorForm : Form
 
         var help = new Label
         {
-            Text = "灰: 全体 / 赤: 残す範囲 / 黄×: 入力 / 水色×: 選択",
+            Text = "灰: 全体 / 赤: 残す範囲 / 水色: 選択ペア / 黄×: 入力",
             Dock = DockStyle.Fill,
             ForeColor = Color.FromArgb(210, 215, 222),
             TextAlign = ContentAlignment.MiddleLeft
@@ -467,6 +490,7 @@ public sealed class MacroTrimEditorForm : Form
         if (!hasSelection)
         {
             _selectedLabel.Text = "選択なし";
+            _deleteEventButton.Text = "選択イベント削除";
             _waitBeforeBox.Value = 0;
             _xBox.Value = 0;
             _yBox.Value = 0;
@@ -477,7 +501,11 @@ public sealed class MacroTrimEditorForm : Form
         var macroEvent = _events[index];
         var previousMs = index == 0 ? 0 : _events[index - 1].TimeOffsetMs;
         var waitBefore = Math.Max(0, macroEvent.TimeOffsetMs - previousMs);
-        _selectedLabel.Text = $"{macroEvent.TimeOffsetMs:N0} ms  {GetKindText(macroEvent)}  {GetDetailText(macroEvent)}";
+        var pairedIndex = FindPairedEventIndex(_events, index);
+        _selectedLabel.Text = pairedIndex is null
+            ? $"{macroEvent.TimeOffsetMs:N0} ms  {GetKindText(macroEvent)}  {GetDetailText(macroEvent)}"
+            : $"{macroEvent.TimeOffsetMs:N0} ms  {GetKindText(macroEvent)}  {GetDetailText(macroEvent)}  ペアあり";
+        _deleteEventButton.Text = pairedIndex is null ? "選択イベント削除" : "選択ペア削除";
         _waitBeforeBox.Value = Math.Min(_waitBeforeBox.Maximum, waitBefore);
         _xBox.Value = Math.Clamp(macroEvent.X, (int)_xBox.Minimum, (int)_xBox.Maximum);
         _yBox.Value = Math.Clamp(macroEvent.Y, (int)_yBox.Minimum, (int)_yBox.Maximum);
@@ -490,9 +518,15 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
-        var oldIndex = _selectedEventIndex.Value;
-        _events.RemoveAt(oldIndex);
-        _selectedEventIndex = FindNextMarkerIndex(Math.Min(oldIndex, _events.Count - 1));
+        SaveUndoState();
+        var indexes = GetSelectionGroupIndexes(_selectedEventIndex.Value);
+        var nextSearchIndex = indexes.Min();
+        foreach (var index in indexes.OrderByDescending(item => item))
+        {
+            _events.RemoveAt(index);
+        }
+
+        _selectedEventIndex = FindNextMarkerIndex(Math.Min(nextSearchIndex, _events.Count - 1));
         RefreshEditor();
     }
 
@@ -512,6 +546,7 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
+        SaveUndoState();
         for (var i = index; i < _events.Count; i++)
         {
             _events[i].TimeOffsetMs = Math.Max(0, _events[i].TimeOffsetMs + delta);
@@ -533,6 +568,12 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
+        if (macroEvent.X == (int)_xBox.Value && macroEvent.Y == (int)_yBox.Value)
+        {
+            return;
+        }
+
+        SaveUndoState();
         macroEvent.X = (int)_xBox.Value;
         macroEvent.Y = (int)_yBox.Value;
         RefreshEditor();
@@ -613,6 +654,78 @@ public sealed class MacroTrimEditorForm : Form
         return null;
     }
 
+    private List<int> GetSelectionGroupIndexes(int selectedIndex)
+    {
+        var indexes = new List<int> { selectedIndex };
+        var pairedIndex = FindPairedEventIndex(_events, selectedIndex);
+        if (pairedIndex is not null)
+        {
+            if (_events[selectedIndex].Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp)
+            {
+                var start = Math.Min(selectedIndex, pairedIndex.Value);
+                var end = Math.Max(selectedIndex, pairedIndex.Value);
+                indexes.AddRange(Enumerable.Range(start, end - start + 1));
+            }
+            else
+            {
+                indexes.Add(pairedIndex.Value);
+            }
+        }
+
+        return indexes.Distinct().OrderBy(item => item).ToList();
+    }
+
+    private void SaveUndoState()
+    {
+        _undoStack.Push(CreateSnapshot());
+        _redoStack.Clear();
+    }
+
+    private void Undo()
+    {
+        if (_undoStack.Count == 0)
+        {
+            return;
+        }
+
+        _redoStack.Push(CreateSnapshot());
+        RestoreSnapshot(_undoStack.Pop());
+    }
+
+    private void Redo()
+    {
+        if (_redoStack.Count == 0)
+        {
+            return;
+        }
+
+        _undoStack.Push(CreateSnapshot());
+        RestoreSnapshot(_redoStack.Pop());
+    }
+
+    private EditorSnapshot CreateSnapshot()
+    {
+        return new EditorSnapshot(
+            _events.Select(CloneEvent).ToList(),
+            _selectedEventIndex,
+            _startTrack.Value,
+            _endTrack.Value);
+    }
+
+    private void RestoreSnapshot(EditorSnapshot snapshot)
+    {
+        _events.Clear();
+        _events.AddRange(snapshot.Events.Select(CloneEvent));
+        UpdateTrackRange();
+        _startTrack.Value = Math.Min(_startTrack.Maximum, snapshot.StartMs);
+        var minEnd = Math.Min(_endTrack.Maximum, _startTrack.Value + 1);
+        _endTrack.Value = Math.Clamp(snapshot.EndMs, minEnd, _endTrack.Maximum);
+        _selectedEventIndex = snapshot.SelectedIndex is >= 0 && snapshot.SelectedIndex < _events.Count
+            ? snapshot.SelectedIndex
+            : FindNextMarkerIndex(Math.Min(snapshot.SelectedIndex ?? 0, _events.Count - 1));
+        RefreshEditor();
+    }
+
     private long GetDuration()
     {
         return _events.Count == 0 ? 0 : _events.Max(item => item.TimeOffsetMs);
@@ -659,6 +772,63 @@ public sealed class MacroTrimEditorForm : Form
             or MacroEventKind.KeyUp;
     }
 
+    private static int? FindPairedEventIndex(IReadOnlyList<MacroEvent> events, int index)
+    {
+        if (index < 0 || index >= events.Count)
+        {
+            return null;
+        }
+
+        var macroEvent = events[index];
+        if (macroEvent.Kind == MacroEventKind.MouseDown)
+        {
+            return FindForward(events, index, item => item.Kind == MacroEventKind.MouseUp && item.Button == macroEvent.Button);
+        }
+
+        if (macroEvent.Kind == MacroEventKind.MouseUp)
+        {
+            return FindBackward(events, index, item => item.Kind == MacroEventKind.MouseDown && item.Button == macroEvent.Button);
+        }
+
+        if (macroEvent.Kind == MacroEventKind.KeyDown)
+        {
+            return FindForward(events, index, item => item.Kind == MacroEventKind.KeyUp && item.KeyCode == macroEvent.KeyCode);
+        }
+
+        if (macroEvent.Kind == MacroEventKind.KeyUp)
+        {
+            return FindBackward(events, index, item => item.Kind == MacroEventKind.KeyDown && item.KeyCode == macroEvent.KeyCode);
+        }
+
+        return null;
+    }
+
+    private static int? FindForward(IReadOnlyList<MacroEvent> events, int index, Func<MacroEvent, bool> predicate)
+    {
+        for (var i = index + 1; i < events.Count; i++)
+        {
+            if (predicate(events[i]))
+            {
+                return i;
+            }
+        }
+
+        return null;
+    }
+
+    private static int? FindBackward(IReadOnlyList<MacroEvent> events, int index, Func<MacroEvent, bool> predicate)
+    {
+        for (var i = index - 1; i >= 0; i--)
+        {
+            if (predicate(events[i]))
+            {
+                return i;
+            }
+        }
+
+        return null;
+    }
+
     private static string GetKindText(MacroEvent macroEvent)
     {
         return macroEvent.Kind switch
@@ -682,6 +852,8 @@ public sealed class MacroTrimEditorForm : Form
             _ => ""
         };
     }
+
+    private sealed record EditorSnapshot(List<MacroEvent> Events, int? SelectedIndex, int StartMs, int EndMs);
 
     private sealed class MacroEditorCanvas : Panel
     {
@@ -764,6 +936,17 @@ public sealed class MacroTrimEditorForm : Form
                 Color.FromArgb(235, 235, 70, 72),
                 3);
 
+            var pairRange = GetSelectedPairRange();
+            if (pairRange is not null)
+            {
+                DrawPath(
+                    e.Graphics,
+                    _events.Skip(pairRange.Value.Start).Take(pairRange.Value.End - pairRange.Value.Start + 1).ToList(),
+                    mapper,
+                    Color.FromArgb(245, 95, 220, 255),
+                    5);
+            }
+
             foreach (var item in _events.Select((macroEvent, index) => new TimedEvent(index, macroEvent))
                          .Where(item => IsEventMarker(item.Event)))
             {
@@ -771,14 +954,13 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             DrawSelectedCallout(e.Graphics, mapper);
-            DrawLegend(e.Graphics);
         }
 
         private void DrawMarker(Graphics graphics, TimedEvent item, Func<Point, Point> mapper)
         {
             var macroEvent = item.Event;
             var point = mapper(new Point(macroEvent.X, macroEvent.Y));
-            var selected = _selectedIndex == item.Index;
+            var selected = IsSelectedOrPaired(item.Index);
             var kept = macroEvent.TimeOffsetMs >= _startMs && macroEvent.TimeOffsetMs <= _endMs;
             var color = selected
                 ? Color.FromArgb(95, 220, 255)
@@ -791,6 +973,37 @@ public sealed class MacroTrimEditorForm : Form
             var size = macroEvent.Kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 10 : 8;
             graphics.DrawLine(pen, point.X - size, point.Y - size, point.X + size, point.Y + size);
             graphics.DrawLine(pen, point.X - size, point.Y + size, point.X + size, point.Y - size);
+        }
+
+        private (int Start, int End)? GetSelectedPairRange()
+        {
+            if (_selectedIndex is null)
+            {
+                return null;
+            }
+
+            var pairedIndex = FindPairedEventIndex(_events, _selectedIndex.Value);
+            if (pairedIndex is null)
+            {
+                return null;
+            }
+
+            return (Math.Min(_selectedIndex.Value, pairedIndex.Value), Math.Max(_selectedIndex.Value, pairedIndex.Value));
+        }
+
+        private bool IsSelectedOrPaired(int index)
+        {
+            if (_selectedIndex is null)
+            {
+                return false;
+            }
+
+            if (_selectedIndex == index)
+            {
+                return true;
+            }
+
+            return FindPairedEventIndex(_events, _selectedIndex.Value) == index;
         }
 
         private void DrawSelectedCallout(Graphics graphics, Func<Point, Point> mapper)
@@ -819,16 +1032,6 @@ public sealed class MacroTrimEditorForm : Form
             graphics.FillRectangle(bg, rect);
             graphics.DrawRectangle(border, rect);
             graphics.DrawString(text, Font, brush, x, y);
-        }
-
-        private void DrawLegend(Graphics graphics)
-        {
-            var rect = new Rectangle(16, 16, 470, 72);
-            using var bg = new SolidBrush(Color.FromArgb(210, 8, 10, 14));
-            using var brush = new SolidBrush(Color.White);
-            graphics.FillRectangle(bg, rect);
-            graphics.DrawString("灰: 全体軌道   赤: 残す範囲   黄×: 入力イベント   水色×: 選択", Font, brush, 30, 28);
-            graphics.DrawString("軌道上の×をクリックするとイベントを選択できます。", Font, brush, 30, 52);
         }
 
         private void DrawEmpty(Graphics graphics)
