@@ -6,6 +6,7 @@ public partial class Form1 : Form
     private readonly MacroPlayer _player = new();
     private readonly HotkeyManager _hotkeys = new();
     private readonly List<Macro> _macros = new();
+    private readonly EmergencyStopOverlay _emergencyOverlay = new();
     private readonly ToolTip _toolTip = new()
     {
         AutoPopDelay = 12000,
@@ -26,6 +27,7 @@ public partial class Form1 : Form
     private Label _summaryLabel = null!;
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
+    private TextBox _emergencyHotkeyBox = null!;
     private ComboBox _densityBox = null!;
     private NumericUpDown _pollingRateBox = null!;
     private NumericUpDown _countdownBox = null!;
@@ -39,6 +41,7 @@ public partial class Form1 : Form
     private SplitContainer _mainSplit = null!;
     private SplitContainer _rightSplit = null!;
     private CancellationTokenSource? _countdownCts;
+    private HotkeyGesture _emergencyStopHotkey = CreateDefaultEmergencyHotkey();
     private bool _updatingSelection;
 
     public Form1()
@@ -64,7 +67,7 @@ public partial class Form1 : Form
             var hotkeyId = m.WParam.ToInt32();
             if (hotkeyId == HotkeyManager.EmergencyStopId)
             {
-                StopCurrentWork();
+                EmergencyStopCurrentWork();
                 return;
             }
 
@@ -104,6 +107,11 @@ public partial class Form1 : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         Controls.Add(root);
+        _emergencyOverlay.Visible = false;
+        _emergencyOverlay.Bounds = ClientRectangle;
+        _emergencyOverlay.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+        Controls.Add(_emergencyOverlay);
+        _emergencyOverlay.BringToFront();
 
         var topPanel = new FlowLayoutPanel
         {
@@ -189,10 +197,13 @@ public partial class Form1 : Form
         _nameBox.TextChanged += NameBoxOnTextChanged;
         AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58, 105);
         _hotkeyBox.KeyDown += HotkeyBoxOnKeyDown;
+        AddLabeledControl(macroGroup, "緊急停止", _emergencyHotkeyBox = new TextBox { ReadOnly = true }, 92, 105);
+        _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
+        _emergencyHotkeyBox.KeyDown += EmergencyHotkeyBoxOnKeyDown;
         macroGroup.Controls.Add(new Label
         {
             Text = "入力欄を選択してキーを押す（削除で解除）",
-            Location = new Point(12, 92),
+            Location = new Point(12, 126),
             Size = new Size(260, 36)
         });
 
@@ -349,6 +360,7 @@ public partial class Form1 : Form
     {
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
         _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
+        _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
         _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は負荷を抑え、標準は通常用途、高精度は細かい動きを多めに記録します。");
         _toolTip.SetToolTip(_pollingRateBox, "マウス位置を確認する頻度です。高いほど細かく記録しますが、負荷とイベント数が増えます。通常は200Hz程度で十分です。");
         _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
@@ -419,6 +431,13 @@ public partial class Form1 : Form
     private void StopButtonOnClick(object? sender, EventArgs e)
     {
         StopCurrentWork();
+    }
+
+    private void EmergencyStopCurrentWork()
+    {
+        StopCurrentWork();
+        _emergencyOverlay.ShowMessage();
+        SetStatus("緊急停止しました。");
     }
 
     private void PlayButtonOnClick(object? sender, EventArgs e)
@@ -689,6 +708,34 @@ public partial class Form1 : Form
         AutoSaveMacros();
     }
 
+    private void EmergencyHotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
+    {
+        e.SuppressKeyPress = true;
+
+        if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin)
+        {
+            return;
+        }
+
+        if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
+        {
+            _emergencyStopHotkey = CreateDefaultEmergencyHotkey();
+        }
+        else
+        {
+            _emergencyStopHotkey = new HotkeyGesture
+            {
+                Ctrl = e.Control,
+                Alt = e.Alt,
+                Shift = e.Shift,
+                Key = e.KeyCode
+            };
+        }
+
+        _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
+        RefreshHotkeys();
+    }
+
     private void LoadDefaultMacros()
     {
         try
@@ -799,7 +846,7 @@ public partial class Form1 : Form
 
         try
         {
-            _hotkeys.RegisterAll(Handle, _macros);
+            _hotkeys.RegisterAll(Handle, _macros, _emergencyStopHotkey);
         }
         catch (Exception ex)
         {
@@ -833,5 +880,82 @@ public partial class Form1 : Form
         }
 
         _statusLabel.Text = message;
+    }
+
+    private static HotkeyGesture CreateDefaultEmergencyHotkey()
+    {
+        return new HotkeyGesture
+        {
+            Ctrl = true,
+            Alt = true,
+            Key = Keys.Pause
+        };
+    }
+
+    private sealed class EmergencyStopOverlay : Control
+    {
+        private readonly System.Windows.Forms.Timer _timer = new();
+        private readonly System.Diagnostics.Stopwatch _clock = new();
+        private readonly Font _font = new("Yu Gothic UI", 34F, FontStyle.Bold, GraphicsUnit.Point);
+
+        public EmergencyStopOverlay()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint
+                | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            Enabled = false;
+            _timer.Interval = 16;
+            _timer.Tick += (_, _) =>
+            {
+                if (_clock.ElapsedMilliseconds >= 1600)
+                {
+                    _timer.Stop();
+                    Visible = false;
+                    return;
+                }
+
+                Invalidate();
+            };
+        }
+
+        public void ShowMessage()
+        {
+            Visible = true;
+            BringToFront();
+            _clock.Restart();
+            _timer.Start();
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            var progress = Math.Clamp(_clock.ElapsedMilliseconds / 1600.0, 0.0, 1.0);
+            var alpha = progress < 0.18
+                ? (int)Math.Round(255 * (progress / 0.18))
+                : (int)Math.Round(255 * Math.Max(0.0, 1.0 - (progress - 0.18) / 0.82));
+            using var brush = new SolidBrush(Color.FromArgb(alpha, Color.Red));
+            using var outline = new SolidBrush(Color.FromArgb(Math.Min(210, alpha), Color.Black));
+            const string text = "緊急停止しました";
+            var size = e.Graphics.MeasureString(text, _font);
+            var x = (Width - size.Width) / 2F;
+            var y = (Height - size.Height) / 2F;
+            e.Graphics.DrawString(text, _font, outline, x + 2, y + 2);
+            e.Graphics.DrawString(text, _font, brush, x, y);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _timer.Dispose();
+                _font.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }

@@ -14,17 +14,15 @@ public sealed class HotkeyManager : IDisposable
 
     public IReadOnlyDictionary<int, Guid> RegisteredMacros => _registeredMacros;
 
-    public void RegisterAll(IntPtr windowHandle, IEnumerable<Macro> macros)
+    public void RegisterAll(IntPtr windowHandle, IEnumerable<Macro> macros, HotkeyGesture emergencyStopHotkey)
     {
         UnregisterAll();
         _windowHandle = windowHandle;
 
-        Register(windowHandle, EmergencyStopId, new HotkeyGesture
+        if (!emergencyStopHotkey.IsEmpty)
         {
-            Ctrl = true,
-            Alt = true,
-            Key = Keys.Pause
-        });
+            Register(windowHandle, EmergencyStopId, emergencyStopHotkey);
+        }
 
         var id = FirstMacroId;
         foreach (var macro in macros.Where(m => !m.Hotkey.IsEmpty))

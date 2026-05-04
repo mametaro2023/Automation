@@ -316,10 +316,13 @@ public sealed class PreviewOverlayForm : Form
     private readonly Stopwatch _clock = new();
     private readonly Stopwatch _seekClock = new();
     private readonly Stopwatch _hudClock = new();
+    private readonly Stopwatch _postRollClock = new();
     private bool _isPlaying;
     private bool _isSeeking;
+    private bool _isPostRolling;
     private bool _showHud;
     private long _currentMs;
+    private long _visualMs;
     private long _seekStartMs;
     private long _seekTargetMs;
     private long _lastSoundTimeMs;
@@ -470,7 +473,9 @@ public sealed class PreviewOverlayForm : Form
         if (_currentMs >= _preview.DurationMs)
         {
             _currentMs = 0;
+            _visualMs = _currentMs;
             _isSeeking = false;
+            _isPostRolling = false;
         }
 
         StartPreviewPlayback();
@@ -484,6 +489,8 @@ public sealed class PreviewOverlayForm : Form
         }
 
         _isPlaying = true;
+        _isPostRolling = false;
+        _visualMs = _currentMs;
         _lastSoundTimeMs = _currentMs;
         _clock.Restart();
         EnsureTimerRunning();
@@ -505,9 +512,11 @@ public sealed class PreviewOverlayForm : Form
             var progress = Math.Clamp(_seekClock.ElapsedMilliseconds / (double)SeekAnimationMs, 0.0, 1.0);
             var eased = SmoothStep(progress);
             _currentMs = (long)Math.Round(_seekStartMs + (_seekTargetMs - _seekStartMs) * eased);
+            _visualMs = _currentMs;
             if (progress >= 1.0)
             {
                 _currentMs = _seekTargetMs;
+                _visualMs = _currentMs;
                 _isSeeking = false;
                 if (_isPlaying)
                 {
@@ -528,10 +537,21 @@ public sealed class PreviewOverlayForm : Form
                 next = _preview.DurationMs;
                 _isPlaying = false;
                 _clock.Reset();
+                StartPostRoll();
             }
 
             _currentMs = next;
+            _visualMs = _currentMs;
             PlaySoundsBetween(previousMs, _currentMs);
+        }
+
+        if (_isPostRolling)
+        {
+            _visualMs = Math.Min(_preview.DurationMs + EventAnimationMs, _preview.DurationMs + _postRollClock.ElapsedMilliseconds);
+            if (_visualMs >= _preview.DurationMs + EventAnimationMs)
+            {
+                _isPostRolling = false;
+            }
         }
 
         if (_showHud && _hudClock.ElapsedMilliseconds >= HudVisibleMs)
@@ -560,6 +580,7 @@ public sealed class PreviewOverlayForm : Form
         _seekStartMs = _currentMs;
         _seekTargetMs = target;
         _isSeeking = true;
+        _isPostRolling = false;
         _seekClock.Restart();
         EnsureTimerRunning();
         ShowHud();
@@ -575,7 +596,7 @@ public sealed class PreviewOverlayForm : Form
 
     private void StopTimerIfIdle()
     {
-        if (!_isPlaying && !_isSeeking && !_showHud)
+        if (!_isPlaying && !_isSeeking && !_isPostRolling && !_showHud)
         {
             _timer.Stop();
         }
@@ -604,6 +625,19 @@ public sealed class PreviewOverlayForm : Form
         }
 
         _lastSoundTimeMs = toMs;
+    }
+
+    private void StartPostRoll()
+    {
+        _isPostRolling = _preview.PerfectMarkers.Any(item =>
+            item.TimeMs >= _preview.DurationMs - EventAnimationMs
+            && item.TimeMs <= _preview.DurationMs);
+        if (_isPostRolling)
+        {
+            _visualMs = _currentMs;
+            _postRollClock.Restart();
+            EnsureTimerRunning();
+        }
     }
 
     private static double SmoothStep(double value)
@@ -724,16 +758,16 @@ public sealed class PreviewOverlayForm : Form
 
     private MarkerVisual GetMarkerVisual(PreviewMarker marker)
     {
-        var delta = _currentMs - marker.TimeMs;
+        var delta = _visualMs - marker.TimeMs;
         var isRelease = marker.Kind is MacroEventKind.MouseUp or MacroEventKind.KeyUp;
-        var baseAlpha = _currentMs >= marker.TimeMs
+        var baseAlpha = _visualMs >= marker.TimeMs
             ? isRelease ? 55 : 150
             : 55;
-        var textAlpha = _currentMs >= marker.TimeMs
+        var textAlpha = _visualMs >= marker.TimeMs
             ? isRelease ? 95 : 220
             : 90;
         var baseSize = marker.Kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 9 : 7;
-        var width = _currentMs >= marker.TimeMs ? 2 : 1;
+        var width = _visualMs >= marker.TimeMs ? 2 : 1;
 
         if (marker.Kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown
             && delta >= 0 && delta <= EventAnimationMs)
