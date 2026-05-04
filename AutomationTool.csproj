@@ -5,7 +5,6 @@
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
-    <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AutomationTool</AssemblyName>
     <RootNamespace>AutomationTool</RootNamespace>

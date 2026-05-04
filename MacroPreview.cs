@@ -3,6 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Diagnostics;
 using System.IO;
+using System.Media;
 
 namespace AutomationTool;
 
@@ -659,21 +660,19 @@ public sealed class PreviewOverlayForm : Form
             return;
         }
 
-        var points = GetSegmentPath(_preview.PerfectTimedPath, segment, _currentMs);
+        var points = GetSegmentPath(_preview.PerfectTimedPath, segment);
         DrawPath(graphics, points, Color.FromArgb(95, 220, 255), 6, 245);
     }
 
     private static List<Point> GetSegmentPath(
         List<TimedPreviewPoint> path,
-        PreviewInteractionSegment segment,
-        long currentMs)
+        PreviewInteractionSegment segment)
     {
-        var endMs = Math.Min(currentMs, segment.EndMs);
         var points = new List<Point> { segment.Start };
         points.AddRange(path
-            .Where(item => item.TimeMs > segment.StartMs && item.TimeMs < endMs)
+            .Where(item => item.TimeMs > segment.StartMs && item.TimeMs < segment.EndMs)
             .Select(item => item.Point));
-        points.Add(InterpolatePoint(path, endMs) ?? segment.End);
+        points.Add(segment.End);
         return points;
     }
 
@@ -858,16 +857,15 @@ public sealed class PreviewOverlayForm : Form
 internal sealed class PreviewSoundPlayer : IDisposable
 {
     private readonly Dictionary<MacroEventKind, List<string>> _soundFiles = new();
-    private readonly List<System.Windows.Media.MediaPlayer> _activePlayers = new();
     private readonly Random _random = new();
 
     public PreviewSoundPlayer()
     {
         var soundsPath = ResolveSoundsPath();
-        AddFiles(MacroEventKind.MouseDown, soundsPath, "click_on-*.opus");
-        AddFiles(MacroEventKind.MouseUp, soundsPath, "click_off-*.opus");
-        AddFiles(MacroEventKind.KeyDown, soundsPath, "keyboard_on-*.opus");
-        AddFiles(MacroEventKind.KeyUp, soundsPath, "keyboard_off-*.opus");
+        AddFiles(MacroEventKind.MouseDown, soundsPath, "click_on-*.wav");
+        AddFiles(MacroEventKind.MouseUp, soundsPath, "click_off-*.wav");
+        AddFiles(MacroEventKind.KeyDown, soundsPath, "keyboard_on-*.wav");
+        AddFiles(MacroEventKind.KeyUp, soundsPath, "keyboard_off-*.wav");
     }
 
     public void Play(MacroEventKind kind)
@@ -878,20 +876,22 @@ internal sealed class PreviewSoundPlayer : IDisposable
         }
 
         var file = files[_random.Next(files.Count)];
-        var player = new System.Windows.Media.MediaPlayer();
-        player.MediaEnded += (_, _) => DisposePlayer(player);
-        player.MediaFailed += (_, _) => DisposePlayer(player);
-        _activePlayers.Add(player);
-        player.Open(new Uri(file, UriKind.Absolute));
-        player.Play();
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                using var player = new SoundPlayer(file);
+                player.PlaySync();
+            }
+            catch
+            {
+                // Preview audio is optional; drawing must keep working even if a file cannot play.
+            }
+        });
     }
 
     public void Dispose()
     {
-        foreach (var player in _activePlayers.ToList())
-        {
-            DisposePlayer(player);
-        }
     }
 
     private void AddFiles(MacroEventKind kind, string soundsPath, string pattern)
@@ -908,13 +908,6 @@ internal sealed class PreviewSoundPlayer : IDisposable
         {
             _soundFiles[kind] = files;
         }
-    }
-
-    private void DisposePlayer(System.Windows.Media.MediaPlayer player)
-    {
-        player.Stop();
-        player.Close();
-        _activePlayers.Remove(player);
     }
 
     private static string ResolveSoundsPath()
