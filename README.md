@@ -18,12 +18,14 @@ Lightweight Windows macro recorder/player built with C# WinForms.
   - Acceleration jitter on interpolated mouse movement
   - Trajectory jitter that bends movement paths while preserving click/key anchors
 - Saves and loads macros as JSON.
+- Automatically saves macros under the user's application data folder and loads them on startup.
 - Registers global macro shortcuts.
 - Emergency stop hotkey: `Ctrl+Alt+Pause`.
 - Optional countdown before recording starts.
 - Preview overlay that draws recorded movement without sending input:
   - Red: exact recorded path
   - Yellow: one or more noise-adjusted path candidates
+  - Thin lines show the full path, and the bold line animates the current preview playback position
 
 ## Notes
 
@@ -38,6 +40,7 @@ Lightweight Windows macro recorder/player built with C# WinForms.
 - Preview can draw multiple noisy trajectory candidates at once.
 - Preview event markers are drawn as cross marks, with one readable label per event.
 - Basic macro editing supports trimming the beginning and end with timeline sliders and a path preview.
+- Deleting a macro requires confirmation.
 - Click anchors are capped to small jitter, and key anchors are not coordinate-jittered.
 - Coordinate jitter should still be kept low for small buttons and precise UI targets.
 - Detailed event rows are not rendered in the UI while recording, to avoid slowing down pointer rendering.

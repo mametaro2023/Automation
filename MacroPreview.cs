@@ -1,23 +1,30 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.Diagnostics;
 
 namespace AutomationTool;
 
 public sealed class MacroPreview
 {
     public List<Point> PerfectPath { get; } = new();
+    public List<TimedPreviewPoint> PerfectTimedPath { get; } = new();
     public List<List<Point>> NoisyPaths { get; } = new();
+    public List<List<TimedPreviewPoint>> NoisyTimedPaths { get; } = new();
     public List<PreviewMarker> PerfectMarkers { get; } = new();
     public List<List<PreviewMarker>> NoisyMarkers { get; } = new();
+    public long DurationMs { get; set; }
 }
 
 public sealed class PreviewMarker
 {
     public Point Location { get; init; }
+    public long TimeMs { get; init; }
     public MacroEventKind Kind { get; init; }
     public string Text { get; init; } = "";
 }
+
+public sealed record TimedPreviewPoint(long TimeMs, Point Point);
 
 public static class MacroPreviewBuilder
 {
@@ -25,10 +32,13 @@ public static class MacroPreviewBuilder
     {
         var preview = new MacroPreview();
         var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
+        preview.DurationMs = events.Count == 0 ? 0 : events[^1].TimeOffsetMs;
         var count = Math.Clamp(variantCount, 1, 10);
         foreach (var macroEvent in events.Where(e => e.Kind == MacroEventKind.MouseMove))
         {
-            preview.PerfectPath.Add(new Point(macroEvent.X, macroEvent.Y));
+            var point = new Point(macroEvent.X, macroEvent.Y);
+            preview.PerfectPath.Add(point);
+            preview.PerfectTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, point));
         }
 
         foreach (var macroEvent in events.Where(e => e.Kind != MacroEventKind.MouseMove))
@@ -55,6 +65,7 @@ public static class MacroPreviewBuilder
         Random random)
     {
         var noisyPath = new List<Point>();
+        var noisyTimedPath = new List<TimedPreviewPoint>();
         var noisyMarkers = new List<PreviewMarker>();
         var anchor = Point.Empty;
         var hasAnchor = false;
@@ -68,7 +79,7 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            FlushMoveSegment(noisyPath, segment, anchor, hasAnchor, noise, random);
+            FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, noise, random);
             segment.Clear();
 
             if (TryGetPoint(macroEvent, out var point))
@@ -76,18 +87,21 @@ public static class MacroPreviewBuilder
                 var noisyPoint = CreateNoisyAnchor(point, macroEvent, noise, random);
                 noisyMarkers.Add(CreateMarker(noisyPoint, macroEvent));
                 noisyPath.Add(noisyPoint);
+                noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPoint));
                 anchor = noisyPoint;
                 hasAnchor = true;
             }
         }
 
-        FlushMoveSegment(noisyPath, segment, anchor, hasAnchor, noise, random);
+        FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, noise, random);
         preview.NoisyPaths.Add(noisyPath);
+        preview.NoisyTimedPaths.Add(noisyTimedPath);
         preview.NoisyMarkers.Add(noisyMarkers);
     }
 
     private static void FlushMoveSegment(
         List<Point> noisyPath,
+        List<TimedPreviewPoint> noisyTimedPath,
         List<MacroEvent> segment,
         Point anchor,
         bool hasAnchor,
@@ -121,6 +135,7 @@ public static class MacroPreviewBuilder
             noisyPath.Add(new Point(
                 (int)Math.Round(macroEvent.X + normalX * sideOffset),
                 (int)Math.Round(macroEvent.Y + normalY * sideOffset)));
+            noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPath[^1]));
         }
     }
 
@@ -173,6 +188,7 @@ public static class MacroPreviewBuilder
         return new PreviewMarker
         {
             Location = point,
+            TimeMs = macroEvent.TimeOffsetMs,
             Kind = macroEvent.Kind,
             Text = macroEvent.Kind switch
             {
@@ -191,8 +207,17 @@ public sealed class PreviewOverlayForm : Form
 {
     private readonly MacroPreview _preview;
     private readonly Rectangle _virtualBounds;
+    private readonly System.Windows.Forms.Timer _timer = new();
+    private readonly TrackBar _seekBar = new();
+    private readonly NumericUpDown _speedBox = new();
+    private readonly Button _playButton = new();
+    private readonly Button _stopButton = new();
+    private readonly Button _closeButton = new();
     private readonly Font _markerFont = new("MS UI Gothic", 9F, FontStyle.Bold, GraphicsUnit.Point);
     private readonly Font _helpFont = new("MS UI Gothic", 10F, FontStyle.Regular, GraphicsUnit.Point);
+    private readonly Stopwatch _clock = new();
+    private bool _updatingSeek;
+    private long _currentMs;
 
     public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount)
     {
@@ -210,6 +235,72 @@ public sealed class PreviewOverlayForm : Form
         KeyPreview = true;
         Cursor = Cursors.Cross;
         Text = "プレビュー";
+        BuildControls();
+    }
+
+    private void BuildControls()
+    {
+        var panel = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 58,
+            BackColor = Color.FromArgb(230, 32, 32, 32)
+        };
+        Controls.Add(panel);
+
+        _playButton.Text = "再生";
+        _playButton.Location = new Point(12, 16);
+        _playButton.Size = new Size(72, 26);
+        _playButton.Click += (_, _) => StartPreviewPlayback();
+        panel.Controls.Add(_playButton);
+
+        _stopButton.Text = "停止";
+        _stopButton.Location = new Point(92, 16);
+        _stopButton.Size = new Size(72, 26);
+        _stopButton.Click += (_, _) => StopPreviewPlayback(resetPosition: false);
+        panel.Controls.Add(_stopButton);
+
+        _seekBar.Location = new Point(176, 11);
+        _seekBar.Size = new Size(420, 36);
+        _seekBar.Minimum = 0;
+        _seekBar.Maximum = Math.Max(1, (int)Math.Min(int.MaxValue, _preview.DurationMs));
+        _seekBar.TickFrequency = Math.Max(1, _seekBar.Maximum / 10);
+        _seekBar.ValueChanged += (_, _) =>
+        {
+            if (_updatingSeek)
+            {
+                return;
+            }
+
+            _currentMs = _seekBar.Value;
+            Invalidate();
+        };
+        panel.Controls.Add(_seekBar);
+
+        panel.Controls.Add(new Label
+        {
+            Text = "速度(%)",
+            ForeColor = Color.White,
+            Location = new Point(610, 20),
+            Size = new Size(58, 18)
+        });
+
+        _speedBox.Location = new Point(670, 17);
+        _speedBox.Size = new Size(72, 23);
+        _speedBox.Minimum = 10;
+        _speedBox.Maximum = 500;
+        _speedBox.Increment = 10;
+        _speedBox.Value = 100;
+        panel.Controls.Add(_speedBox);
+
+        _closeButton.Text = "閉じる";
+        _closeButton.Location = new Point(754, 16);
+        _closeButton.Size = new Size(72, 26);
+        _closeButton.Click += (_, _) => Close();
+        panel.Controls.Add(_closeButton);
+
+        _timer.Interval = 16;
+        _timer.Tick += TimerOnTick;
     }
 
     protected override void OnShown(EventArgs e)
@@ -228,22 +319,25 @@ public sealed class PreviewOverlayForm : Form
         base.OnKeyDown(e);
     }
 
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        Close();
-        base.OnMouseDown(e);
-    }
-
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-        DrawPath(e.Graphics, _preview.PerfectPath, Color.Red, 3);
+        DrawPath(e.Graphics, _preview.PerfectPath, Color.Red, 2, 70);
         foreach (var noisyPath in _preview.NoisyPaths)
         {
-            DrawPath(e.Graphics, noisyPath, Color.Gold, 2, 145);
+            DrawPath(e.Graphics, noisyPath, Color.Gold, 2, 65);
+        }
+
+        if (_preview.NoisyTimedPaths.Count > 0)
+        {
+            DrawPath(e.Graphics, GetProgressPath(_preview.NoisyTimedPaths[0], _currentMs), Color.Gold, 4, 235);
+        }
+        else
+        {
+            DrawPath(e.Graphics, GetProgressPath(_preview.PerfectTimedPath, _currentMs), Color.Red, 4, 235);
         }
 
         DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red, 230, true);
@@ -259,11 +353,60 @@ public sealed class PreviewOverlayForm : Form
     {
         if (disposing)
         {
+            _timer.Dispose();
             _markerFont.Dispose();
             _helpFont.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    private void StartPreviewPlayback()
+    {
+        _clock.Restart();
+        _timer.Start();
+    }
+
+    private void StopPreviewPlayback(bool resetPosition)
+    {
+        _timer.Stop();
+        _clock.Reset();
+        if (resetPosition)
+        {
+            SetPreviewTime(0);
+        }
+    }
+
+    private void TimerOnTick(object? sender, EventArgs e)
+    {
+        var elapsed = _clock.ElapsedMilliseconds;
+        _clock.Restart();
+        var speed = (double)_speedBox.Value / 100.0;
+        var next = _currentMs + (long)Math.Round(elapsed * speed);
+        if (next >= _preview.DurationMs)
+        {
+            next = _preview.DurationMs;
+            _timer.Stop();
+        }
+
+        SetPreviewTime(next);
+    }
+
+    private void SetPreviewTime(long timeMs)
+    {
+        _currentMs = Math.Clamp(timeMs, 0, _preview.DurationMs);
+        _updatingSeek = true;
+        _seekBar.Value = (int)Math.Min(_seekBar.Maximum, _currentMs);
+        _updatingSeek = false;
+        Invalidate();
+    }
+
+    private static List<Point> GetProgressPath(List<TimedPreviewPoint> path, long timeMs)
+    {
+        return path
+            .Where(point => point.TimeMs <= timeMs)
+            .Select(point => point.Point)
+            .ToList();
     }
 
     private void DrawPath(Graphics graphics, List<Point> points, Color color, int width, int alpha = 220)
@@ -306,10 +449,6 @@ public sealed class PreviewOverlayForm : Form
         graphics.DrawLine(pen, point.X - size, point.Y - size, point.X + size, point.Y + size);
         graphics.DrawLine(pen, point.X - size, point.Y + size, point.X + size, point.Y - size);
 
-        if (kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown)
-        {
-            graphics.DrawEllipse(pen, point.X - size - 3, point.Y - size - 3, (size + 3) * 2, (size + 3) * 2);
-        }
     }
 
     private void DrawOutlinedText(
@@ -348,7 +487,7 @@ public sealed class PreviewOverlayForm : Form
         graphics.DrawString("赤: 完全再現", _helpFont, whiteBrush, 74, 30);
         graphics.FillRectangle(yellowBrush, 34, 66, 32, 5);
         graphics.DrawString("黄: ノイズ入り", _helpFont, whiteBrush, 74, 58);
-        graphics.DrawString("Esc またはクリックで閉じる", _helpFont, whiteBrush, 34, 84);
+        graphics.DrawString("Esc または 閉じる で終了", _helpFont, whiteBrush, 34, 84);
     }
 
     private Point ToLocal(Point screenPoint)
