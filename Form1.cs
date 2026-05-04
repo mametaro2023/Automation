@@ -38,6 +38,7 @@ public partial class Form1 : Form
     {
         InitializeComponent();
         BuildInterface();
+        LoadDefaultMacros();
     }
 
     private bool IsCountingDown => _countdownCts is not null;
@@ -441,6 +442,7 @@ public partial class Form1 : Form
         macro.Events = editor.TrimmedEvents;
         RefreshMacroList(macro.Id);
         RefreshSummary(macro);
+        AutoSaveMacros();
         SetStatus("マクロをトリミングしました。");
     }
 
@@ -452,9 +454,22 @@ public partial class Form1 : Form
             return;
         }
 
+        var result = MessageBox.Show(
+            this,
+            $"マクロ '{macro.Name}' を削除しますか？",
+            "削除確認",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (result != DialogResult.Yes)
+        {
+            return;
+        }
+
         _macros.Remove(macro);
         RefreshMacroList();
         RefreshHotkeys();
+        AutoSaveMacros();
         SetStatus("マクロを削除しました。");
     }
 
@@ -490,6 +505,7 @@ public partial class Form1 : Form
         _macros.AddRange(MacroStore.Load(dialog.FileName));
         RefreshMacroList();
         RefreshHotkeys();
+        AutoSaveMacros();
         SetStatus($"読み込みました: {dialog.FileName}");
     }
 
@@ -517,6 +533,7 @@ public partial class Form1 : Form
                 };
                 _macros.Add(macro);
                 RefreshMacroList(macro.Id);
+                AutoSaveMacros();
                 SetStatus($"{events.Count} 件のイベントを記録しました。");
             }
             else
@@ -610,6 +627,7 @@ public partial class Form1 : Form
 
         macro.Name = string.IsNullOrWhiteSpace(_nameBox.Text) ? "マクロ" : _nameBox.Text.Trim();
         RefreshMacroList(macro.Id);
+        AutoSaveMacros();
     }
 
     private void HotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
@@ -644,6 +662,34 @@ public partial class Form1 : Form
         _hotkeyBox.Text = macro.Hotkey.ToString();
         RefreshMacroList(macro.Id);
         RefreshHotkeys();
+        AutoSaveMacros();
+    }
+
+    private void LoadDefaultMacros()
+    {
+        try
+        {
+            _macros.Clear();
+            _macros.AddRange(MacroStore.LoadDefault());
+            RefreshMacroList();
+            SetStatus($"自動読み込み: {_macros.Count} 件");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"自動読み込み失敗: {ex.Message}");
+        }
+    }
+
+    private void AutoSaveMacros()
+    {
+        try
+        {
+            MacroStore.SaveDefault(_macros);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"自動保存失敗: {ex.Message}");
+        }
     }
 
     private RecordingOptions GetRecordingOptions()
