@@ -117,7 +117,6 @@ public sealed class MacroTrimEditorForm : Form
         {
             Dock = DockStyle.Fill,
             FixedPanel = FixedPanel.Panel2,
-            Panel2MinSize = 330,
             SplitterWidth = 6,
             BackColor = Color.FromArgb(47, 51, 58)
         };
@@ -137,19 +136,32 @@ public sealed class MacroTrimEditorForm : Form
         side.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
         side.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
         mainSplit.Panel2.Controls.Add(side);
-        Shown += (_, _) =>
-        {
-            if (mainSplit.Width > 700)
-            {
-                mainSplit.SplitterDistance = Math.Max(420, mainSplit.Width - 390);
-            }
-        };
+        Shown += (_, _) => LayoutMainSplit(mainSplit);
 
         ConfigureEventList();
         side.Controls.Add(_eventList, 0, 0);
         side.Controls.Add(CreatePropertyPanel(), 0, 1);
 
         root.Controls.Add(CreateBottomPanel(), 0, 2);
+    }
+
+    private static void LayoutMainSplit(SplitContainer split)
+    {
+        const int panel1Min = 420;
+        const int panel2Min = 330;
+        const int desiredPanel2 = 390;
+        var availableWidth = split.ClientSize.Width - split.SplitterWidth;
+        if (availableWidth <= panel1Min + panel2Min)
+        {
+            return;
+        }
+
+        split.SplitterDistance = Math.Clamp(
+            availableWidth - desiredPanel2,
+            panel1Min,
+            availableWidth - panel2Min);
+        split.Panel1MinSize = panel1Min;
+        split.Panel2MinSize = panel2Min;
     }
 
     private void ConfigureEventList()
