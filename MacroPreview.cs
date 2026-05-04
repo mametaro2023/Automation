@@ -210,9 +210,9 @@ public sealed class PreviewOverlayForm : Form
     private readonly System.Windows.Forms.Timer _timer = new();
     private readonly TrackBar _seekBar = new();
     private readonly NumericUpDown _speedBox = new();
+    private readonly Button _startButton = new();
     private readonly Button _playButton = new();
-    private readonly Button _stopButton = new();
-    private readonly Button _closeButton = new();
+    private readonly Button _endButton = new();
     private readonly Font _markerFont = new("MS UI Gothic", 9F, FontStyle.Bold, GraphicsUnit.Point);
     private readonly Font _helpFont = new("MS UI Gothic", 10F, FontStyle.Regular, GraphicsUnit.Point);
     private readonly Stopwatch _clock = new();
@@ -230,10 +230,10 @@ public sealed class PreviewOverlayForm : Form
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = Color.Black;
-        Opacity = 0.72;
+        Opacity = 0.86;
         DoubleBuffered = true;
         KeyPreview = true;
-        Cursor = Cursors.Cross;
+        Cursor = Cursors.Default;
         Text = "プレビュー";
         BuildControls();
     }
@@ -243,25 +243,34 @@ public sealed class PreviewOverlayForm : Form
         var panel = new Panel
         {
             Dock = DockStyle.Bottom,
-            Height = 58,
-            BackColor = Color.FromArgb(230, 32, 32, 32)
+            Height = 64,
+            BackColor = Color.FromArgb(245, 20, 20, 20)
         };
         Controls.Add(panel);
 
+        _startButton.Text = "先頭";
+        _startButton.Size = new Size(72, 28);
+        _startButton.Click += (_, _) =>
+        {
+            PausePreviewPlayback();
+            SetPreviewTime(0);
+        };
+        panel.Controls.Add(_startButton);
+
         _playButton.Text = "再生";
-        _playButton.Location = new Point(12, 16);
-        _playButton.Size = new Size(72, 26);
-        _playButton.Click += (_, _) => StartPreviewPlayback();
+        _playButton.Size = new Size(72, 28);
+        _playButton.Click += (_, _) => TogglePreviewPlayback();
         panel.Controls.Add(_playButton);
 
-        _stopButton.Text = "停止";
-        _stopButton.Location = new Point(92, 16);
-        _stopButton.Size = new Size(72, 26);
-        _stopButton.Click += (_, _) => StopPreviewPlayback(resetPosition: false);
-        panel.Controls.Add(_stopButton);
+        _endButton.Text = "最後";
+        _endButton.Size = new Size(72, 28);
+        _endButton.Click += (_, _) =>
+        {
+            PausePreviewPlayback();
+            SetPreviewTime(_preview.DurationMs);
+        };
+        panel.Controls.Add(_endButton);
 
-        _seekBar.Location = new Point(176, 11);
-        _seekBar.Size = new Size(420, 36);
         _seekBar.Minimum = 0;
         _seekBar.Maximum = Math.Max(1, (int)Math.Min(int.MaxValue, _preview.DurationMs));
         _seekBar.TickFrequency = Math.Max(1, _seekBar.Maximum / 10);
@@ -277,15 +286,14 @@ public sealed class PreviewOverlayForm : Form
         };
         panel.Controls.Add(_seekBar);
 
-        panel.Controls.Add(new Label
+        var speedLabel = new Label
         {
             Text = "速度(%)",
             ForeColor = Color.White,
-            Location = new Point(610, 20),
             Size = new Size(58, 18)
-        });
+        };
+        panel.Controls.Add(speedLabel);
 
-        _speedBox.Location = new Point(670, 17);
         _speedBox.Size = new Size(72, 23);
         _speedBox.Minimum = 10;
         _speedBox.Maximum = 500;
@@ -293,11 +301,8 @@ public sealed class PreviewOverlayForm : Form
         _speedBox.Value = 100;
         panel.Controls.Add(_speedBox);
 
-        _closeButton.Text = "閉じる";
-        _closeButton.Location = new Point(754, 16);
-        _closeButton.Size = new Size(72, 26);
-        _closeButton.Click += (_, _) => Close();
-        panel.Controls.Add(_closeButton);
+        panel.Resize += (_, _) => LayoutTransportControls(panel, speedLabel);
+        LayoutTransportControls(panel, speedLabel);
 
         _timer.Interval = 16;
         _timer.Tick += TimerOnTick;
@@ -325,25 +330,32 @@ public sealed class PreviewOverlayForm : Form
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-        DrawPath(e.Graphics, _preview.PerfectPath, Color.Red, 2, 70);
+        DrawPath(e.Graphics, _preview.PerfectPath, Color.Red, 1, 42);
         foreach (var noisyPath in _preview.NoisyPaths)
         {
-            DrawPath(e.Graphics, noisyPath, Color.Gold, 2, 65);
+            DrawPath(e.Graphics, noisyPath, Color.Gold, 1, 40);
         }
 
+        List<Point> progressPath;
+        Color progressColor;
         if (_preview.NoisyTimedPaths.Count > 0)
         {
-            DrawPath(e.Graphics, GetProgressPath(_preview.NoisyTimedPaths[0], _currentMs), Color.Gold, 4, 235);
+            progressPath = GetProgressPath(_preview.NoisyTimedPaths[0], _currentMs);
+            progressColor = Color.Gold;
         }
         else
         {
-            DrawPath(e.Graphics, GetProgressPath(_preview.PerfectTimedPath, _currentMs), Color.Red, 4, 235);
+            progressPath = GetProgressPath(_preview.PerfectTimedPath, _currentMs);
+            progressColor = Color.Red;
         }
+
+        DrawPath(e.Graphics, progressPath, progressColor, 5, 245);
+        DrawCurrentPoint(e.Graphics, progressPath, progressColor);
 
         DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red, 230, true);
         foreach (var markers in _preview.NoisyMarkers)
         {
-            DrawMarkers(e.Graphics, markers, Color.Gold, 130, false);
+            DrawMarkers(e.Graphics, markers, Color.Gold, 95, false);
         }
 
         DrawLegend(e.Graphics);
@@ -361,20 +373,57 @@ public sealed class PreviewOverlayForm : Form
         base.Dispose(disposing);
     }
 
+    private void LayoutTransportControls(Panel panel, Label speedLabel)
+    {
+        const int margin = 12;
+        const int buttonGap = 8;
+        var buttonTop = 18;
+        _startButton.Location = new Point(margin, buttonTop);
+        _playButton.Location = new Point(_startButton.Right + buttonGap, buttonTop);
+        _endButton.Location = new Point(_playButton.Right + buttonGap, buttonTop);
+
+        _speedBox.Location = new Point(panel.ClientSize.Width - _speedBox.Width - margin, 20);
+        speedLabel.Location = new Point(_speedBox.Left - speedLabel.Width - 6, 23);
+
+        var seekLeft = _endButton.Right + 14;
+        var seekRight = speedLabel.Left - 12;
+        _seekBar.Location = new Point(seekLeft, 14);
+        _seekBar.Size = new Size(Math.Max(120, seekRight - seekLeft), 38);
+    }
+
+    private void TogglePreviewPlayback()
+    {
+        if (_timer.Enabled)
+        {
+            PausePreviewPlayback();
+            return;
+        }
+
+        if (_currentMs >= _preview.DurationMs)
+        {
+            SetPreviewTime(0);
+        }
+
+        StartPreviewPlayback();
+    }
+
     private void StartPreviewPlayback()
     {
+        if (_preview.DurationMs <= 0)
+        {
+            return;
+        }
+
+        _playButton.Text = "停止";
         _clock.Restart();
         _timer.Start();
     }
 
-    private void StopPreviewPlayback(bool resetPosition)
+    private void PausePreviewPlayback()
     {
         _timer.Stop();
         _clock.Reset();
-        if (resetPosition)
-        {
-            SetPreviewTime(0);
-        }
+        _playButton.Text = "再生";
     }
 
     private void TimerOnTick(object? sender, EventArgs e)
@@ -386,7 +435,7 @@ public sealed class PreviewOverlayForm : Form
         if (next >= _preview.DurationMs)
         {
             next = _preview.DurationMs;
-            _timer.Stop();
+            PausePreviewPlayback();
         }
 
         SetPreviewTime(next);
@@ -399,6 +448,21 @@ public sealed class PreviewOverlayForm : Form
         _seekBar.Value = (int)Math.Min(_seekBar.Maximum, _currentMs);
         _updatingSeek = false;
         Invalidate();
+    }
+
+    private void DrawCurrentPoint(Graphics graphics, List<Point> progressPath, Color color)
+    {
+        if (progressPath.Count == 0)
+        {
+            return;
+        }
+
+        var point = ToLocal(progressPath[^1]);
+        using var fill = new SolidBrush(Color.FromArgb(245, color));
+        using var outline = new Pen(Color.FromArgb(230, Color.Black), 2);
+        var rect = new Rectangle(point.X - 5, point.Y - 5, 10, 10);
+        graphics.FillEllipse(fill, rect);
+        graphics.DrawEllipse(outline, rect);
     }
 
     private static List<Point> GetProgressPath(List<TimedPreviewPoint> path, long timeMs)
@@ -480,14 +544,14 @@ public sealed class PreviewOverlayForm : Form
         using var redBrush = new SolidBrush(Color.Red);
         using var yellowBrush = new SolidBrush(Color.Gold);
         using var whiteBrush = new SolidBrush(Color.White);
-        using var bgBrush = new SolidBrush(Color.FromArgb(160, Color.Black));
-        var box = new Rectangle(18, 18, 360, 92);
+        using var bgBrush = new SolidBrush(Color.FromArgb(205, Color.Black));
+        var box = new Rectangle(18, 18, 330, 92);
         graphics.FillRectangle(bgBrush, box);
         graphics.FillRectangle(redBrush, 34, 38, 32, 5);
         graphics.DrawString("赤: 完全再現", _helpFont, whiteBrush, 74, 30);
         graphics.FillRectangle(yellowBrush, 34, 66, 32, 5);
         graphics.DrawString("黄: ノイズ入り", _helpFont, whiteBrush, 74, 58);
-        graphics.DrawString("Esc または 閉じる で終了", _helpFont, whiteBrush, 34, 84);
+        graphics.DrawString("Esc で終了", _helpFont, whiteBrush, 34, 84);
     }
 
     private Point ToLocal(Point screenPoint)
