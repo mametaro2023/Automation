@@ -5,91 +5,320 @@ namespace AutomationTool;
 
 public sealed class MacroTrimEditorForm : Form
 {
-    private readonly Macro _macro;
-    private readonly TrimPreviewPanel _previewPanel;
+    private readonly List<MacroEvent> _events;
+    private readonly MacroEditorCanvas _canvas = new();
+    private readonly ListView _eventList = new();
     private readonly TrackBar _startTrack;
     private readonly TrackBar _endTrack;
-    private readonly Label _rangeLabel;
-    private readonly Button _okButton;
-    private readonly Button _cancelButton;
+    private readonly Label _rangeLabel = new();
+    private readonly Label _selectedLabel = new();
+    private readonly NumericUpDown _waitBeforeBox = new();
+    private readonly NumericUpDown _xBox = new();
+    private readonly NumericUpDown _yBox = new();
+    private readonly Button _deleteEventButton = new();
+    private readonly Button _applyWaitButton = new();
+    private readonly Button _applyPositionButton = new();
+    private readonly Button _okButton = new();
+    private readonly Button _cancelButton = new();
+    private bool _updatingSelection;
+    private int? _selectedEventIndex;
 
     public MacroTrimEditorForm(Macro macro)
     {
-        _macro = macro;
+        _events = macro.Events
+            .Select(CloneEvent)
+            .OrderBy(item => item.TimeOffsetMs)
+            .ToList();
 
-        Text = "マクロ編集 - トリミング";
+        Text = "マクロ編集";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(840, 560);
-        ClientSize = new Size(980, 680);
-        Font = new Font("MS UI Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        WindowState = FormWindowState.Maximized;
+        MinimumSize = new Size(1100, 720);
+        Font = new Font("Yu Gothic UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        BackColor = Color.FromArgb(24, 26, 30);
+        ForeColor = Color.White;
+        KeyPreview = true;
 
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(8)
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        Controls.Add(root);
-
-        _previewPanel = new TrimPreviewPanel
-        {
-            Dock = DockStyle.Fill,
-            BorderStyle = BorderStyle.Fixed3D
-        };
-        root.Controls.Add(_previewPanel, 0, 0);
-
-        var duration = Math.Max(1, (int)Math.Min(int.MaxValue, macro.DurationMs));
+        var duration = Math.Max(1, (int)Math.Min(int.MaxValue, GetDuration()));
         _startTrack = CreateTrackBar(duration);
         _endTrack = CreateTrackBar(duration);
         _endTrack.Value = duration;
 
-        root.Controls.Add(CreateTrackRow("開始を捨てる位置", _startTrack), 0, 1);
-        root.Controls.Add(CreateTrackRow("終了を捨てる位置", _endTrack), 0, 2);
+        BuildInterface();
+        WireEvents();
+        RefreshEditor();
+    }
 
-        var bottom = new FlowLayoutPanel
+    public List<MacroEvent> TrimmedEvents { get; private set; } = new();
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape)
+        {
+            DialogResult = DialogResult.Cancel;
+            return;
+        }
+
+        if (e.KeyCode == Keys.Delete && _selectedEventIndex is not null && !IsEditingValue())
+        {
+            DeleteSelectedEvent();
+            return;
+        }
+
+        base.OnKeyDown(e);
+    }
+
+    private bool IsEditingValue()
+    {
+        return ActiveControl is NumericUpDown or TextBoxBase;
+    }
+
+    private void BuildInterface()
+    {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            BackColor = BackColor
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+        Controls.Add(root);
+
+        var header = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(34, 37, 43),
+            Padding = new Padding(16, 8, 16, 6)
+        };
+        root.Controls.Add(header, 0, 0);
+
+        header.Controls.Add(new Label
+        {
+            Text = "マクロ編集",
+            Dock = DockStyle.Left,
+            AutoSize = false,
+            Width = 160,
+            Font = new Font(Font.FontFamily, 13F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.White
+        });
+        header.Controls.Add(new Label
+        {
+            Text = "軌道上の×または一覧を選択して、不要イベント削除・待ち時間・座標を調整",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.FromArgb(205, 210, 218)
+        });
+
+        var mainSplit = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            FixedPanel = FixedPanel.Panel2,
+            Panel2MinSize = 330,
+            SplitterWidth = 6,
+            BackColor = Color.FromArgb(47, 51, 58)
+        };
+        root.Controls.Add(mainSplit, 0, 1);
+
+        _canvas.Dock = DockStyle.Fill;
+        mainSplit.Panel1.Controls.Add(_canvas);
+
+        var side = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(8),
+            BackColor = Color.FromArgb(29, 32, 37)
+        };
+        side.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
+        side.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
+        mainSplit.Panel2.Controls.Add(side);
+        Shown += (_, _) =>
+        {
+            if (mainSplit.Width > 700)
+            {
+                mainSplit.SplitterDistance = Math.Max(420, mainSplit.Width - 390);
+            }
+        };
+
+        ConfigureEventList();
+        side.Controls.Add(_eventList, 0, 0);
+        side.Controls.Add(CreatePropertyPanel(), 0, 1);
+
+        root.Controls.Add(CreateBottomPanel(), 0, 2);
+    }
+
+    private void ConfigureEventList()
+    {
+        _eventList.Dock = DockStyle.Fill;
+        _eventList.View = View.Details;
+        _eventList.FullRowSelect = true;
+        _eventList.HideSelection = false;
+        _eventList.MultiSelect = false;
+        _eventList.BackColor = Color.FromArgb(245, 245, 245);
+        _eventList.ForeColor = Color.Black;
+        _eventList.Columns.Add("時刻", 72);
+        _eventList.Columns.Add("種別", 78);
+        _eventList.Columns.Add("詳細", 130);
+        _eventList.Columns.Add("座標", 84);
+    }
+
+    private Control CreatePropertyPanel()
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 8,
+            Padding = new Padding(10),
+            BackColor = Color.FromArgb(34, 37, 43)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _selectedLabel.Text = "選択なし";
+        _selectedLabel.ForeColor = Color.White;
+        _selectedLabel.Dock = DockStyle.Fill;
+        _selectedLabel.TextAlign = ContentAlignment.MiddleLeft;
+        panel.Controls.Add(_selectedLabel, 0, 0);
+        panel.SetColumnSpan(_selectedLabel, 3);
+
+        AddPropertyRow(panel, 1, "直前待ち(ms)", _waitBeforeBox, _applyWaitButton, "適用");
+        ConfigureNumber(_waitBeforeBox, 0, 600000, 1);
+
+        AddPropertyRow(panel, 3, "X座標", _xBox, null, "");
+        ConfigureNumber(_xBox, -100000, 100000, 1);
+        AddPropertyRow(panel, 4, "Y座標", _yBox, _applyPositionButton, "適用");
+        ConfigureNumber(_yBox, -100000, 100000, 1);
+
+        _deleteEventButton.Text = "選択イベント削除";
+        _deleteEventButton.Dock = DockStyle.Fill;
+        panel.Controls.Add(_deleteEventButton, 0, 6);
+        panel.SetColumnSpan(_deleteEventButton, 3);
+
+        return panel;
+    }
+
+    private static void AddPropertyRow(
+        TableLayoutPanel panel,
+        int row,
+        string labelText,
+        Control control,
+        Button? button,
+        string buttonText)
+    {
+        panel.Controls.Add(new Label
+        {
+            Text = labelText,
+            ForeColor = Color.FromArgb(220, 224, 230),
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, row);
+        control.Dock = DockStyle.Fill;
+        panel.Controls.Add(control, 1, row);
+        if (button is not null)
+        {
+            button.Text = buttonText;
+            button.Dock = DockStyle.Fill;
+            panel.Controls.Add(button, 2, row);
+        }
+    }
+
+    private Control CreateBottomPanel()
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 3,
+            Padding = new Padding(12, 8, 12, 8),
+            BackColor = Color.FromArgb(34, 37, 43)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        panel.Controls.Add(CreateBottomLabel("開始"), 0, 0);
+        panel.Controls.Add(_startTrack, 1, 0);
+        panel.Controls.Add(CreateBottomLabel("終了"), 0, 1);
+        panel.Controls.Add(_endTrack, 1, 1);
+
+        _rangeLabel.Dock = DockStyle.Fill;
+        _rangeLabel.ForeColor = Color.White;
+        _rangeLabel.TextAlign = ContentAlignment.MiddleLeft;
+        panel.Controls.Add(_rangeLabel, 0, 2);
+        panel.SetColumnSpan(_rangeLabel, 2);
+
+        var help = new Label
+        {
+            Text = "灰: 全体 / 赤: 残す範囲 / 黄×: 入力 / 水色×: 選択",
+            Dock = DockStyle.Fill,
+            ForeColor = Color.FromArgb(210, 215, 222),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        panel.Controls.Add(help, 2, 0);
+        panel.SetRowSpan(help, 2);
+
+        var buttons = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
             WrapContents = false
         };
-        root.Controls.Add(bottom, 0, 3);
+        panel.Controls.Add(buttons, 3, 0);
+        panel.SetRowSpan(buttons, 3);
 
-        _okButton = new Button
-        {
-            Text = "適用",
-            Size = new Size(88, 26)
-        };
-        _okButton.Click += OkButtonOnClick;
-        bottom.Controls.Add(_okButton);
+        _okButton.Text = "適用";
+        _okButton.Size = new Size(84, 28);
+        buttons.Controls.Add(_okButton);
 
-        _cancelButton = new Button
-        {
-            Text = "キャンセル",
-            Size = new Size(88, 26)
-        };
-        _cancelButton.Click += (_, _) => DialogResult = DialogResult.Cancel;
-        bottom.Controls.Add(_cancelButton);
+        _cancelButton.Text = "キャンセル";
+        _cancelButton.Size = new Size(92, 28);
+        buttons.Controls.Add(_cancelButton);
 
-        _rangeLabel = new Label
-        {
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Width = 420,
-            Height = 26
-        };
-        bottom.Controls.Add(_rangeLabel);
-
-        _startTrack.ValueChanged += TrackOnValueChanged;
-        _endTrack.ValueChanged += TrackOnValueChanged;
-        UpdatePreview();
+        return panel;
     }
 
-    public List<MacroEvent> TrimmedEvents { get; private set; } = new();
+    private static Label CreateBottomLabel(string text)
+    {
+        return new Label
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.FromArgb(220, 224, 230),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+    }
+
+    private void WireEvents()
+    {
+        _canvas.EventSelected += SelectEvent;
+        _eventList.SelectedIndexChanged += EventListOnSelectedIndexChanged;
+        _startTrack.ValueChanged += TrackOnValueChanged;
+        _endTrack.ValueChanged += TrackOnValueChanged;
+        _deleteEventButton.Click += (_, _) => DeleteSelectedEvent();
+        _applyWaitButton.Click += (_, _) => ApplyWaitBefore();
+        _applyPositionButton.Click += (_, _) => ApplyPosition();
+        _okButton.Click += OkButtonOnClick;
+        _cancelButton.Click += (_, _) => DialogResult = DialogResult.Cancel;
+    }
 
     private static TrackBar CreateTrackBar(int maximum)
     {
@@ -104,24 +333,12 @@ public sealed class MacroTrimEditorForm : Form
         };
     }
 
-    private static Control CreateTrackRow(string labelText, TrackBar trackBar)
+    private static void ConfigureNumber(NumericUpDown box, int minimum, int maximum, int increment)
     {
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.Controls.Add(new Label
-        {
-            Text = labelText,
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft
-        }, 0, 0);
-        panel.Controls.Add(trackBar, 1, 0);
-        return panel;
+        box.Minimum = minimum;
+        box.Maximum = maximum;
+        box.Increment = increment;
+        box.ThousandsSeparator = true;
     }
 
     private void TrackOnValueChanged(object? sender, EventArgs e)
@@ -138,43 +355,263 @@ public sealed class MacroTrimEditorForm : Form
             }
         }
 
-        UpdatePreview();
+        RefreshCanvasAndRange();
     }
 
-    private void UpdatePreview()
+    private void EventListOnSelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_updatingSelection || _eventList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+
+        if (_eventList.SelectedItems[0].Tag is int eventIndex)
+        {
+            SelectEvent(eventIndex);
+        }
+    }
+
+    private void SelectEvent(int eventIndex)
+    {
+        if (eventIndex < 0 || eventIndex >= _events.Count)
+        {
+            return;
+        }
+
+        _selectedEventIndex = eventIndex;
+        _canvas.SetSelection(eventIndex);
+        RefreshEventSelection();
+        RefreshSelectedDetails();
+    }
+
+    private void RefreshEditor()
+    {
+        UpdateTrackRange();
+        RefreshEventList();
+        RefreshCanvasAndRange();
+        RefreshSelectedDetails();
+    }
+
+    private void RefreshCanvasAndRange()
     {
         var startMs = _startTrack.Value;
         var endMs = _endTrack.Value;
-        _previewPanel.SetRange(_macro.Events, startMs, endMs);
-        _rangeLabel.Text = $"残す範囲: {startMs} ms - {endMs} ms / {_macro.DurationMs} ms";
+        _canvas.SetData(_events, startMs, endMs, _selectedEventIndex);
+        _rangeLabel.Text = $"残す範囲: {startMs:N0} ms - {endMs:N0} ms / {GetDuration():N0} ms";
+    }
+
+    private void RefreshEventList()
+    {
+        _updatingSelection = true;
+        _eventList.BeginUpdate();
+        _eventList.Items.Clear();
+        foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index })
+                     .Where(item => IsEventMarker(item.macroEvent)))
+        {
+            var macroEvent = item.macroEvent;
+            var row = new ListViewItem($"{macroEvent.TimeOffsetMs:N0}");
+            row.SubItems.Add(GetKindText(macroEvent));
+            row.SubItems.Add(GetDetailText(macroEvent));
+            row.SubItems.Add($"{macroEvent.X}, {macroEvent.Y}");
+            row.Tag = item.index;
+            _eventList.Items.Add(row);
+
+            if (_selectedEventIndex == item.index)
+            {
+                row.Selected = true;
+                row.EnsureVisible();
+            }
+        }
+
+        _eventList.EndUpdate();
+        _updatingSelection = false;
+    }
+
+    private void RefreshEventSelection()
+    {
+        _updatingSelection = true;
+        foreach (ListViewItem item in _eventList.Items)
+        {
+            item.Selected = item.Tag is int eventIndex && eventIndex == _selectedEventIndex;
+            if (item.Selected)
+            {
+                item.EnsureVisible();
+            }
+        }
+
+        _updatingSelection = false;
+    }
+
+    private void RefreshSelectedDetails()
+    {
+        var hasSelection = _selectedEventIndex is >= 0 && _selectedEventIndex < _events.Count;
+        _deleteEventButton.Enabled = hasSelection;
+        _applyWaitButton.Enabled = hasSelection;
+        _applyPositionButton.Enabled = hasSelection;
+        _waitBeforeBox.Enabled = hasSelection;
+        _xBox.Enabled = hasSelection;
+        _yBox.Enabled = hasSelection;
+
+        if (!hasSelection)
+        {
+            _selectedLabel.Text = "選択なし";
+            _waitBeforeBox.Value = 0;
+            _xBox.Value = 0;
+            _yBox.Value = 0;
+            return;
+        }
+
+        var index = _selectedEventIndex!.Value;
+        var macroEvent = _events[index];
+        var previousMs = index == 0 ? 0 : _events[index - 1].TimeOffsetMs;
+        var waitBefore = Math.Max(0, macroEvent.TimeOffsetMs - previousMs);
+        _selectedLabel.Text = $"{macroEvent.TimeOffsetMs:N0} ms  {GetKindText(macroEvent)}  {GetDetailText(macroEvent)}";
+        _waitBeforeBox.Value = Math.Min(_waitBeforeBox.Maximum, waitBefore);
+        _xBox.Value = Math.Clamp(macroEvent.X, (int)_xBox.Minimum, (int)_xBox.Maximum);
+        _yBox.Value = Math.Clamp(macroEvent.Y, (int)_yBox.Minimum, (int)_yBox.Maximum);
+    }
+
+    private void DeleteSelectedEvent()
+    {
+        if (_selectedEventIndex is null)
+        {
+            return;
+        }
+
+        var oldIndex = _selectedEventIndex.Value;
+        _events.RemoveAt(oldIndex);
+        _selectedEventIndex = FindNextMarkerIndex(Math.Min(oldIndex, _events.Count - 1));
+        RefreshEditor();
+    }
+
+    private void ApplyWaitBefore()
+    {
+        if (_selectedEventIndex is null)
+        {
+            return;
+        }
+
+        var index = _selectedEventIndex.Value;
+        var previousMs = index == 0 ? 0 : _events[index - 1].TimeOffsetMs;
+        var currentWait = Math.Max(0, _events[index].TimeOffsetMs - previousMs);
+        var delta = (long)_waitBeforeBox.Value - currentWait;
+        if (delta == 0)
+        {
+            return;
+        }
+
+        for (var i = index; i < _events.Count; i++)
+        {
+            _events[i].TimeOffsetMs = Math.Max(0, _events[i].TimeOffsetMs + delta);
+        }
+
+        RefreshEditor();
+    }
+
+    private void ApplyPosition()
+    {
+        if (_selectedEventIndex is null)
+        {
+            return;
+        }
+
+        var macroEvent = _events[_selectedEventIndex.Value];
+        if (!IsDrawablePoint(macroEvent))
+        {
+            return;
+        }
+
+        macroEvent.X = (int)_xBox.Value;
+        macroEvent.Y = (int)_yBox.Value;
+        RefreshEditor();
+    }
+
+    private void UpdateTrackRange()
+    {
+        var duration = Math.Max(1, (int)Math.Min(int.MaxValue, GetDuration()));
+        SetTrackMaximum(_startTrack, duration);
+        SetTrackMaximum(_endTrack, duration);
+        if (_endTrack.Value == 0 || _endTrack.Value > duration)
+        {
+            _endTrack.Value = duration;
+        }
+
+        if (_startTrack.Value >= _endTrack.Value)
+        {
+            _startTrack.Value = Math.Max(0, _endTrack.Value - 1);
+        }
+    }
+
+    private static void SetTrackMaximum(TrackBar trackBar, int maximum)
+    {
+        if (trackBar.Value > maximum)
+        {
+            trackBar.Value = maximum;
+        }
+
+        trackBar.Maximum = maximum;
+        trackBar.TickFrequency = Math.Max(1, maximum / 10);
+        trackBar.SmallChange = Math.Max(1, maximum / 100);
+        trackBar.LargeChange = Math.Max(1, maximum / 20);
     }
 
     private void OkButtonOnClick(object? sender, EventArgs e)
     {
         var startMs = _startTrack.Value;
         var endMs = _endTrack.Value;
-        var trimmed = _macro.Events
+        var edited = _events
             .Where(item => item.TimeOffsetMs >= startMs && item.TimeOffsetMs <= endMs)
             .Select(item => CloneWithOffset(item, startMs))
             .OrderBy(item => item.TimeOffsetMs)
             .ToList();
 
-        if (trimmed.Count == 0)
+        if (edited.Count == 0)
         {
-            MessageBox.Show(this, "残すイベントがありません。", "トリミング", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "残すイベントがありません。", "マクロ編集", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
-        TrimmedEvents = trimmed;
+        TrimmedEvents = edited;
         DialogResult = DialogResult.OK;
     }
 
-    private static MacroEvent CloneWithOffset(MacroEvent source, long offsetMs)
+    private int? FindNextMarkerIndex(int startIndex)
+    {
+        if (_events.Count == 0)
+        {
+            return null;
+        }
+
+        for (var i = Math.Max(0, startIndex); i < _events.Count; i++)
+        {
+            if (IsEventMarker(_events[i]))
+            {
+                return i;
+            }
+        }
+
+        for (var i = Math.Min(startIndex, _events.Count - 1); i >= 0; i--)
+        {
+            if (IsEventMarker(_events[i]))
+            {
+                return i;
+            }
+        }
+
+        return null;
+    }
+
+    private long GetDuration()
+    {
+        return _events.Count == 0 ? 0 : _events.Max(item => item.TimeOffsetMs);
+    }
+
+    private static MacroEvent CloneEvent(MacroEvent source)
     {
         return new MacroEvent
         {
             Kind = source.Kind,
-            TimeOffsetMs = Math.Max(0, source.TimeOffsetMs - offsetMs),
+            TimeOffsetMs = source.TimeOffsetMs,
             X = source.X,
             Y = source.Y,
             Button = source.Button,
@@ -183,24 +620,105 @@ public sealed class MacroTrimEditorForm : Form
         };
     }
 
-    private sealed class TrimPreviewPanel : Panel
+    private static MacroEvent CloneWithOffset(MacroEvent source, long offsetMs)
     {
+        var clone = CloneEvent(source);
+        clone.TimeOffsetMs = Math.Max(0, clone.TimeOffsetMs - offsetMs);
+        return clone;
+    }
+
+    private static bool IsDrawablePoint(MacroEvent macroEvent)
+    {
+        return (macroEvent.Kind is MacroEventKind.MouseMove
+            or MacroEventKind.MouseDown
+            or MacroEventKind.MouseUp
+            or MacroEventKind.MouseWheel
+            or MacroEventKind.KeyDown
+            or MacroEventKind.KeyUp)
+            && (macroEvent.X != 0 || macroEvent.Y != 0);
+    }
+
+    private static bool IsEventMarker(MacroEvent macroEvent)
+    {
+        return macroEvent.Kind is MacroEventKind.MouseDown
+            or MacroEventKind.MouseUp
+            or MacroEventKind.MouseWheel
+            or MacroEventKind.KeyDown
+            or MacroEventKind.KeyUp;
+    }
+
+    private static string GetKindText(MacroEvent macroEvent)
+    {
+        return macroEvent.Kind switch
+        {
+            MacroEventKind.MouseDown => "マウス押下",
+            MacroEventKind.MouseUp => "マウス解放",
+            MacroEventKind.MouseWheel => "ホイール",
+            MacroEventKind.KeyDown => "キー押下",
+            MacroEventKind.KeyUp => "キー解放",
+            _ => "移動"
+        };
+    }
+
+    private static string GetDetailText(MacroEvent macroEvent)
+    {
+        return macroEvent.Kind switch
+        {
+            MacroEventKind.MouseDown or MacroEventKind.MouseUp => macroEvent.Button.ToString(),
+            MacroEventKind.MouseWheel => macroEvent.WheelDelta.ToString(),
+            MacroEventKind.KeyDown or MacroEventKind.KeyUp => macroEvent.KeyCode.ToString(),
+            _ => ""
+        };
+    }
+
+    private sealed class MacroEditorCanvas : Panel
+    {
+        private readonly List<MarkerHit> _markerHits = new();
         private List<MacroEvent> _events = new();
         private long _startMs;
         private long _endMs;
+        private int? _selectedIndex;
 
-        public TrimPreviewPanel()
+        public MacroEditorCanvas()
         {
             DoubleBuffered = true;
-            BackColor = Color.FromArgb(28, 28, 28);
+            BackColor = Color.FromArgb(16, 18, 21);
+            Cursor = Cursors.Cross;
         }
 
-        public void SetRange(List<MacroEvent> events, long startMs, long endMs)
+        public event Action<int>? EventSelected;
+
+        public void SetData(List<MacroEvent> events, long startMs, long endMs, int? selectedIndex)
         {
             _events = events;
             _startMs = startMs;
             _endMs = endMs;
+            _selectedIndex = selectedIndex;
             Invalidate();
+        }
+
+        public void SetSelection(int? selectedIndex)
+        {
+            _selectedIndex = selectedIndex;
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            var hit = _markerHits
+                .Select(item => new
+                {
+                    Marker = item,
+                    Distance = DistanceSquared(e.Location, item.Location)
+                })
+                .Where(item => item.Distance <= 18 * 18)
+                .OrderBy(item => item.Distance)
+                .FirstOrDefault();
+            if (hit is not null)
+            {
+                EventSelected?.Invoke(hit.Marker.EventIndex);
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -208,48 +726,118 @@ public sealed class MacroTrimEditorForm : Form
             base.OnPaint(e);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            e.Graphics.Clear(BackColor);
+            _markerHits.Clear();
 
-            var mousePoints = _events
-                .Where(IsDrawablePoint)
-                .Select(item => new TimedPoint(item.TimeOffsetMs, new Point(item.X, item.Y)))
+            var drawable = _events
+                .Select((macroEvent, index) => new TimedEvent(index, macroEvent))
+                .Where(item => IsDrawablePoint(item.Event))
                 .ToList();
 
-            if (mousePoints.Count == 0)
+            if (drawable.Count == 0)
             {
                 DrawEmpty(e.Graphics);
                 return;
             }
 
-            var mapper = CreateMapper(mousePoints.Select(item => item.Point).ToList());
-            DrawPath(e.Graphics, mousePoints.Select(item => item.Point).ToList(), mapper, Color.FromArgb(90, Color.White), 2);
+            var mapper = CreateMapper(drawable.Select(item => new Point(item.Event.X, item.Event.Y)).ToList());
+            DrawGrid(e.Graphics);
+            DrawPath(e.Graphics, drawable.Select(item => item.Event).ToList(), mapper, Color.FromArgb(70, Color.White), 2);
+            DrawPath(
+                e.Graphics,
+                drawable.Where(item => item.Event.TimeOffsetMs >= _startMs && item.Event.TimeOffsetMs <= _endMs)
+                    .Select(item => item.Event)
+                    .ToList(),
+                mapper,
+                Color.FromArgb(235, 235, 70, 72),
+                3);
 
-            var keptPoints = mousePoints
-                .Where(item => item.TimeMs >= _startMs && item.TimeMs <= _endMs)
-                .Select(item => item.Point)
-                .ToList();
-            DrawPath(e.Graphics, keptPoints, mapper, Color.Red, 3);
-
-            foreach (var macroEvent in _events.Where(item => item.TimeOffsetMs >= _startMs && item.TimeOffsetMs <= _endMs && IsEventMarker(item)))
+            foreach (var item in _events.Select((macroEvent, index) => new TimedEvent(index, macroEvent))
+                         .Where(item => IsEventMarker(item.Event)))
             {
-                DrawCross(e.Graphics, mapper(new Point(macroEvent.X, macroEvent.Y)), Color.Gold);
+                DrawMarker(e.Graphics, item, mapper);
             }
 
-            DrawText(e.Graphics);
+            DrawSelectedCallout(e.Graphics, mapper);
+            DrawLegend(e.Graphics);
+        }
+
+        private void DrawMarker(Graphics graphics, TimedEvent item, Func<Point, Point> mapper)
+        {
+            var macroEvent = item.Event;
+            var point = mapper(new Point(macroEvent.X, macroEvent.Y));
+            var selected = _selectedIndex == item.Index;
+            var kept = macroEvent.TimeOffsetMs >= _startMs && macroEvent.TimeOffsetMs <= _endMs;
+            var color = selected
+                ? Color.FromArgb(95, 220, 255)
+                : kept
+                    ? Color.Gold
+                    : Color.FromArgb(115, 120, 128);
+
+            _markerHits.Add(new MarkerHit(item.Index, point));
+            using var pen = new Pen(color, selected ? 3 : 2);
+            var size = macroEvent.Kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 10 : 8;
+            graphics.DrawLine(pen, point.X - size, point.Y - size, point.X + size, point.Y + size);
+            graphics.DrawLine(pen, point.X - size, point.Y + size, point.X + size, point.Y - size);
+        }
+
+        private void DrawSelectedCallout(Graphics graphics, Func<Point, Point> mapper)
+        {
+            if (_selectedIndex is null || _selectedIndex < 0 || _selectedIndex >= _events.Count)
+            {
+                return;
+            }
+
+            var macroEvent = _events[_selectedIndex.Value];
+            if (!IsDrawablePoint(macroEvent))
+            {
+                return;
+            }
+
+            var point = mapper(new Point(macroEvent.X, macroEvent.Y));
+            var text = $"{macroEvent.TimeOffsetMs:N0} ms  {GetKindText(macroEvent)}  {GetDetailText(macroEvent)}  ({macroEvent.X}, {macroEvent.Y})";
+            var size = graphics.MeasureString(text, Font);
+            var x = Math.Min(Math.Max(10, point.X + 16), Math.Max(10, Width - (int)size.Width - 28));
+            var y = Math.Min(Math.Max(10, point.Y - 34), Math.Max(10, Height - (int)size.Height - 18));
+            var rect = new Rectangle(x - 8, y - 5, (int)Math.Ceiling(size.Width) + 16, (int)Math.Ceiling(size.Height) + 10);
+
+            using var bg = new SolidBrush(Color.FromArgb(225, 8, 10, 14));
+            using var border = new Pen(Color.FromArgb(95, 220, 255), 1);
+            using var brush = new SolidBrush(Color.White);
+            graphics.FillRectangle(bg, rect);
+            graphics.DrawRectangle(border, rect);
+            graphics.DrawString(text, Font, brush, x, y);
+        }
+
+        private void DrawLegend(Graphics graphics)
+        {
+            var rect = new Rectangle(16, 16, 470, 72);
+            using var bg = new SolidBrush(Color.FromArgb(210, 8, 10, 14));
+            using var brush = new SolidBrush(Color.White);
+            graphics.FillRectangle(bg, rect);
+            graphics.DrawString("灰: 全体軌道   赤: 残す範囲   黄×: 入力イベント   水色×: 選択", Font, brush, 30, 28);
+            graphics.DrawString("軌道上の×をクリックするとイベントを選択できます。", Font, brush, 30, 52);
         }
 
         private void DrawEmpty(Graphics graphics)
         {
             using var brush = new SolidBrush(Color.White);
-            graphics.DrawString("表示できる軌跡がありません。", Font, brush, 12, 12);
+            graphics.DrawString("表示できる軌跡がありません。", Font, brush, 18, 18);
         }
 
-        private void DrawText(Graphics graphics)
+        private void DrawGrid(Graphics graphics)
         {
-            using var brush = new SolidBrush(Color.White);
-            using var bg = new SolidBrush(Color.FromArgb(160, Color.Black));
-            var rect = new Rectangle(10, 10, 420, 50);
-            graphics.FillRectangle(bg, rect);
-            graphics.DrawString("灰色: 元の軌跡 / 赤: 残す範囲 / 黄×: 残るイベント", Font, brush, 20, 18);
+            using var pen = new Pen(Color.FromArgb(22, Color.White), 1);
+            const int step = 80;
+            for (var x = step; x < Width; x += step)
+            {
+                graphics.DrawLine(pen, x, 0, x, Height);
+            }
+
+            for (var y = step; y < Height; y += step)
+            {
+                graphics.DrawLine(pen, 0, y, Width, y);
+            }
         }
 
         private Func<Point, Point> CreateMapper(List<Point> points)
@@ -260,7 +848,7 @@ public sealed class MacroTrimEditorForm : Form
             var maxY = points.Max(point => point.Y);
             var sourceWidth = Math.Max(1, maxX - minX);
             var sourceHeight = Math.Max(1, maxY - minY);
-            var pad = 28;
+            var pad = 54;
             var scale = Math.Min(
                 Math.Max(0.01, (Width - pad * 2) / (double)sourceWidth),
                 Math.Max(0.01, (Height - pad * 2) / (double)sourceHeight));
@@ -270,9 +858,13 @@ public sealed class MacroTrimEditorForm : Form
                 pad + (int)Math.Round((point.Y - minY) * scale));
         }
 
-        private static void DrawPath(Graphics graphics, List<Point> points, Func<Point, Point> mapper, Color color, int width)
+        private static void DrawPath(Graphics graphics, List<MacroEvent> events, Func<Point, Point> mapper, Color color, int width)
         {
-            if (points.Count < 2)
+            var points = events
+                .Where(IsDrawablePoint)
+                .Select(item => mapper(new Point(item.X, item.Y)))
+                .ToArray();
+            if (points.Length < 2)
             {
                 return;
             }
@@ -283,37 +875,17 @@ public sealed class MacroTrimEditorForm : Form
                 EndCap = LineCap.Round,
                 LineJoin = LineJoin.Round
             };
-            graphics.DrawLines(pen, points.Select(mapper).ToArray());
+            graphics.DrawLines(pen, points);
         }
 
-        private static void DrawCross(Graphics graphics, Point point, Color color)
+        private static int DistanceSquared(Point a, Point b)
         {
-            using var pen = new Pen(color, 2);
-            const int size = 7;
-            graphics.DrawLine(pen, point.X - size, point.Y - size, point.X + size, point.Y + size);
-            graphics.DrawLine(pen, point.X - size, point.Y + size, point.X + size, point.Y - size);
+            var dx = a.X - b.X;
+            var dy = a.Y - b.Y;
+            return dx * dx + dy * dy;
         }
 
-        private static bool IsDrawablePoint(MacroEvent macroEvent)
-        {
-            return (macroEvent.Kind is MacroEventKind.MouseMove
-                or MacroEventKind.MouseDown
-                or MacroEventKind.MouseUp
-                or MacroEventKind.MouseWheel
-                or MacroEventKind.KeyDown
-                or MacroEventKind.KeyUp)
-                && (macroEvent.X != 0 || macroEvent.Y != 0);
-        }
-
-        private static bool IsEventMarker(MacroEvent macroEvent)
-        {
-            return macroEvent.Kind is MacroEventKind.MouseDown
-                or MacroEventKind.MouseUp
-                or MacroEventKind.MouseWheel
-                or MacroEventKind.KeyDown
-                or MacroEventKind.KeyUp;
-        }
-
-        private sealed record TimedPoint(long TimeMs, Point Point);
+        private sealed record TimedEvent(int Index, MacroEvent Event);
+        private sealed record MarkerHit(int EventIndex, Point Location);
     }
 }
