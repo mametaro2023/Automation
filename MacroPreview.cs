@@ -207,6 +207,7 @@ public sealed class PreviewOverlayForm : Form
 {
     private readonly MacroPreview _preview;
     private readonly Rectangle _virtualBounds;
+    private readonly Rectangle _transportBounds;
     private readonly System.Windows.Forms.Timer _timer = new();
     private readonly TrackBar _seekBar = new();
     private readonly NumericUpDown _speedBox = new();
@@ -219,10 +220,11 @@ public sealed class PreviewOverlayForm : Form
     private bool _updatingSeek;
     private long _currentMs;
 
-    public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount)
+    public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount, Screen transportScreen)
     {
         _preview = MacroPreviewBuilder.Build(macro, noise, variantCount);
         _virtualBounds = GetVirtualBounds();
+        _transportBounds = transportScreen.WorkingArea;
 
         StartPosition = FormStartPosition.Manual;
         Bounds = _virtualBounds;
@@ -242,8 +244,12 @@ public sealed class PreviewOverlayForm : Form
     {
         var panel = new Panel
         {
-            Dock = DockStyle.Bottom,
-            Height = 64,
+            Bounds = ToLocalRectangle(new Rectangle(
+                _transportBounds.Left,
+                _transportBounds.Bottom - 64,
+                _transportBounds.Width,
+                64)),
+            Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
             BackColor = Color.FromArgb(245, 20, 20, 20)
         };
         Controls.Add(panel);
@@ -336,21 +342,9 @@ public sealed class PreviewOverlayForm : Form
             DrawPath(e.Graphics, noisyPath, Color.Gold, 1, 40);
         }
 
-        List<Point> progressPath;
-        Color progressColor;
-        if (_preview.NoisyTimedPaths.Count > 0)
-        {
-            progressPath = GetProgressPath(_preview.NoisyTimedPaths[0], _currentMs);
-            progressColor = Color.Gold;
-        }
-        else
-        {
-            progressPath = GetProgressPath(_preview.PerfectTimedPath, _currentMs);
-            progressColor = Color.Red;
-        }
-
-        DrawPath(e.Graphics, progressPath, progressColor, 5, 245);
-        DrawCurrentPoint(e.Graphics, progressPath, progressColor);
+        var progressPath = GetProgressPath(_preview.PerfectTimedPath, _currentMs);
+        DrawPath(e.Graphics, progressPath, Color.Red, 5, 245);
+        DrawCurrentPoint(e.Graphics, progressPath, Color.Red);
 
         DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red, 230, true);
         foreach (var markers in _preview.NoisyMarkers)
@@ -557,6 +551,15 @@ public sealed class PreviewOverlayForm : Form
     private Point ToLocal(Point screenPoint)
     {
         return new Point(screenPoint.X - _virtualBounds.Left, screenPoint.Y - _virtualBounds.Top);
+    }
+
+    private Rectangle ToLocalRectangle(Rectangle screenRectangle)
+    {
+        return new Rectangle(
+            screenRectangle.Left - _virtualBounds.Left,
+            screenRectangle.Top - _virtualBounds.Top,
+            screenRectangle.Width,
+            screenRectangle.Height);
     }
 
     private static Rectangle GetVirtualBounds()

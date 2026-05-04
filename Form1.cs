@@ -421,7 +421,7 @@ public partial class Form1 : Form
             AccelerationJitterPercent = (int)_accelNoiseBox.Value,
             TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
         };
-        using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value);
+        using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value, Screen.FromControl(this));
         overlay.ShowDialog(this);
     }
 
