@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Diagnostics;
 using System.IO;
-using System.Media;
+using System.Runtime.InteropServices;
 
 namespace AutomationTool;
 
@@ -856,8 +856,10 @@ public sealed class PreviewOverlayForm : Form
 
 internal sealed class PreviewSoundPlayer : IDisposable
 {
-    private readonly Dictionary<MacroEventKind, List<string>> _soundFiles = new();
+    private readonly Dictionary<MacroEventKind, List<WaveSound>> _sounds = new();
+    private readonly List<WavePlayback> _activePlaybacks = new();
     private readonly Random _random = new();
+    private readonly object _lock = new();
 
     public PreviewSoundPlayer()
     {
@@ -870,28 +872,47 @@ internal sealed class PreviewSoundPlayer : IDisposable
 
     public void Play(MacroEventKind kind)
     {
-        if (!_soundFiles.TryGetValue(kind, out var files) || files.Count == 0)
+        if (!_sounds.TryGetValue(kind, out var sounds) || sounds.Count == 0)
         {
             return;
         }
 
-        var file = files[_random.Next(files.Count)];
-        _ = Task.Run(() =>
+        var sound = sounds[_random.Next(sounds.Count)];
+        try
         {
+            var playback = new WavePlayback(sound, RemovePlayback);
+            lock (_lock)
+            {
+                _activePlaybacks.Add(playback);
+            }
+
             try
             {
-                using var player = new SoundPlayer(file);
-                player.PlaySync();
+                playback.Play();
             }
             catch
             {
-                // Preview audio is optional; drawing must keep working even if a file cannot play.
+                RemovePlayback(playback);
+                throw;
             }
-        });
+        }
+        catch
+        {
+            // Preview audio is optional; drawing must keep working even if a file cannot play.
+        }
     }
 
     public void Dispose()
     {
+        lock (_lock)
+        {
+            foreach (var playback in _activePlaybacks.ToList())
+            {
+                playback.Dispose();
+            }
+
+            _activePlaybacks.Clear();
+        }
     }
 
     private void AddFiles(MacroEventKind kind, string soundsPath, string pattern)
@@ -904,10 +925,25 @@ internal sealed class PreviewSoundPlayer : IDisposable
         var files = Directory.GetFiles(soundsPath, pattern)
             .OrderBy(item => item)
             .ToList();
-        if (files.Count > 0)
+        var sounds = files
+            .Select(WaveSound.TryLoad)
+            .Where(sound => sound is not null)
+            .Cast<WaveSound>()
+            .ToList();
+        if (sounds.Count > 0)
         {
-            _soundFiles[kind] = files;
+            _sounds[kind] = sounds;
         }
+    }
+
+    private void RemovePlayback(WavePlayback playback)
+    {
+        lock (_lock)
+        {
+            _activePlaybacks.Remove(playback);
+        }
+
+        playback.Dispose();
     }
 
     private static string ResolveSoundsPath()
@@ -932,4 +968,210 @@ internal sealed class PreviewSoundPlayer : IDisposable
 
         return outputPath;
     }
+
+    private sealed class WaveSound
+    {
+        private WaveSound(WaveFormat format, byte[] data)
+        {
+            Format = format;
+            Data = data;
+            DurationMs = Math.Max(1, (int)Math.Ceiling(data.Length * 1000.0 / Math.Max(1, format.AvgBytesPerSec)));
+        }
+
+        public WaveFormat Format { get; }
+        public byte[] Data { get; }
+        public int DurationMs { get; }
+
+        public static WaveSound? TryLoad(string path)
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                using var reader = new BinaryReader(stream);
+                if (new string(reader.ReadChars(4)) != "RIFF")
+                {
+                    return null;
+                }
+
+                _ = reader.ReadInt32();
+                if (new string(reader.ReadChars(4)) != "WAVE")
+                {
+                    return null;
+                }
+
+                WaveFormat? format = null;
+                byte[]? data = null;
+                while (stream.Position + 8 <= stream.Length)
+                {
+                    var chunkId = new string(reader.ReadChars(4));
+                    var chunkSize = reader.ReadInt32();
+                    var chunkStart = stream.Position;
+                    if (chunkId == "fmt ")
+                    {
+                        format = new WaveFormat
+                        {
+                            FormatTag = reader.ReadUInt16(),
+                            Channels = reader.ReadUInt16(),
+                            SamplesPerSec = reader.ReadUInt32(),
+                            AvgBytesPerSec = reader.ReadUInt32(),
+                            BlockAlign = reader.ReadUInt16(),
+                            BitsPerSample = reader.ReadUInt16(),
+                            CbSize = chunkSize > 16 ? reader.ReadUInt16() : (ushort)0
+                        };
+                    }
+                    else if (chunkId == "data")
+                    {
+                        data = reader.ReadBytes(chunkSize);
+                    }
+
+                    stream.Position = chunkStart + chunkSize + (chunkSize % 2);
+                }
+
+                if (format is null || data is null || data.Length == 0)
+                {
+                    return null;
+                }
+
+                return new WaveSound(format.Value, data);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    private sealed class WavePlayback : IDisposable
+    {
+        private readonly WaveSound _sound;
+        private readonly Action<WavePlayback> _completed;
+        private readonly GCHandle _dataHandle;
+        private readonly IntPtr _headerPtr;
+        private IntPtr _waveOut;
+        private bool _prepared;
+        private bool _disposed;
+
+        public WavePlayback(WaveSound sound, Action<WavePlayback> completed)
+        {
+            _sound = sound;
+            _completed = completed;
+            _dataHandle = GCHandle.Alloc(sound.Data, GCHandleType.Pinned);
+            _headerPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WaveHeader>());
+        }
+
+        public void Play()
+        {
+            var format = _sound.Format;
+            var result = waveOutOpen(out _waveOut, -1, ref format, IntPtr.Zero, IntPtr.Zero, 0);
+            if (result != 0)
+            {
+                throw new InvalidOperationException($"waveOutOpen failed: {result}");
+            }
+
+            var header = new WaveHeader
+            {
+                Data = _dataHandle.AddrOfPinnedObject(),
+                BufferLength = _sound.Data.Length
+            };
+            Marshal.StructureToPtr(header, _headerPtr, false);
+
+            result = waveOutPrepareHeader(_waveOut, _headerPtr, Marshal.SizeOf<WaveHeader>());
+            if (result != 0)
+            {
+                throw new InvalidOperationException($"waveOutPrepareHeader failed: {result}");
+            }
+
+            _prepared = true;
+            result = waveOutWrite(_waveOut, _headerPtr, Marshal.SizeOf<WaveHeader>());
+            if (result != 0)
+            {
+                throw new InvalidOperationException($"waveOutWrite failed: {result}");
+            }
+
+            _ = CompleteLaterAsync();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (_waveOut != IntPtr.Zero)
+            {
+                waveOutReset(_waveOut);
+                if (_prepared)
+                {
+                    waveOutUnprepareHeader(_waveOut, _headerPtr, Marshal.SizeOf<WaveHeader>());
+                }
+
+                waveOutClose(_waveOut);
+                _waveOut = IntPtr.Zero;
+            }
+
+            if (_dataHandle.IsAllocated)
+            {
+                _dataHandle.Free();
+            }
+
+            Marshal.FreeHGlobal(_headerPtr);
+        }
+
+        private async Task CompleteLaterAsync()
+        {
+            await Task.Delay(_sound.DurationMs + 80).ConfigureAwait(false);
+            _completed(this);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WaveFormat
+    {
+        public ushort FormatTag;
+        public ushort Channels;
+        public uint SamplesPerSec;
+        public uint AvgBytesPerSec;
+        public ushort BlockAlign;
+        public ushort BitsPerSample;
+        public ushort CbSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WaveHeader
+    {
+        public IntPtr Data;
+        public int BufferLength;
+        public int BytesRecorded;
+        public IntPtr User;
+        public int Flags;
+        public int Loops;
+        public IntPtr Next;
+        public IntPtr Reserved;
+    }
+
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutOpen(
+        out IntPtr waveOut,
+        int deviceId,
+        ref WaveFormat format,
+        IntPtr callback,
+        IntPtr instance,
+        int flags);
+
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutPrepareHeader(IntPtr waveOut, IntPtr waveHeader, int size);
+
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutWrite(IntPtr waveOut, IntPtr waveHeader, int size);
+
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutReset(IntPtr waveOut);
+
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutUnprepareHeader(IntPtr waveOut, IntPtr waveHeader, int size);
+
+    [DllImport("winmm.dll", SetLastError = true)]
+    private static extern int waveOutClose(IntPtr waveOut);
 }
