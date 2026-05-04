@@ -205,20 +205,24 @@ public static class MacroPreviewBuilder
 
 public sealed class PreviewOverlayForm : Form
 {
+    private const int SeekAnimationMs = 160;
+    private const int HudVisibleMs = 1800;
+
     private readonly MacroPreview _preview;
     private readonly Rectangle _virtualBounds;
     private readonly Rectangle _transportBounds;
     private readonly System.Windows.Forms.Timer _timer = new();
-    private readonly TrackBar _seekBar = new();
-    private readonly NumericUpDown _speedBox = new();
-    private readonly Button _startButton = new();
-    private readonly Button _playButton = new();
-    private readonly Button _endButton = new();
     private readonly Font _markerFont = new("MS UI Gothic", 9F, FontStyle.Bold, GraphicsUnit.Point);
     private readonly Font _helpFont = new("MS UI Gothic", 10F, FontStyle.Regular, GraphicsUnit.Point);
     private readonly Stopwatch _clock = new();
-    private bool _updatingSeek;
+    private readonly Stopwatch _seekClock = new();
+    private readonly Stopwatch _hudClock = new();
+    private bool _isPlaying;
+    private bool _isSeeking;
+    private bool _showHud;
     private long _currentMs;
+    private long _seekStartMs;
+    private long _seekTargetMs;
 
     public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount, Screen transportScreen)
     {
@@ -237,79 +241,6 @@ public sealed class PreviewOverlayForm : Form
         KeyPreview = true;
         Cursor = Cursors.Default;
         Text = "プレビュー";
-        BuildControls();
-    }
-
-    private void BuildControls()
-    {
-        var panel = new Panel
-        {
-            Bounds = ToLocalRectangle(new Rectangle(
-                _transportBounds.Left,
-                _transportBounds.Bottom - 64,
-                _transportBounds.Width,
-                64)),
-            Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
-            BackColor = Color.FromArgb(245, 20, 20, 20)
-        };
-        Controls.Add(panel);
-
-        _startButton.Text = "先頭";
-        _startButton.Size = new Size(72, 28);
-        _startButton.Click += (_, _) =>
-        {
-            PausePreviewPlayback();
-            SetPreviewTime(0);
-        };
-        panel.Controls.Add(_startButton);
-
-        _playButton.Text = "再生";
-        _playButton.Size = new Size(72, 28);
-        _playButton.Click += (_, _) => TogglePreviewPlayback();
-        panel.Controls.Add(_playButton);
-
-        _endButton.Text = "最後";
-        _endButton.Size = new Size(72, 28);
-        _endButton.Click += (_, _) =>
-        {
-            PausePreviewPlayback();
-            SetPreviewTime(_preview.DurationMs);
-        };
-        panel.Controls.Add(_endButton);
-
-        _seekBar.Minimum = 0;
-        _seekBar.Maximum = Math.Max(1, (int)Math.Min(int.MaxValue, _preview.DurationMs));
-        _seekBar.TickFrequency = Math.Max(1, _seekBar.Maximum / 10);
-        _seekBar.ValueChanged += (_, _) =>
-        {
-            if (_updatingSeek)
-            {
-                return;
-            }
-
-            _currentMs = _seekBar.Value;
-            Invalidate();
-        };
-        panel.Controls.Add(_seekBar);
-
-        var speedLabel = new Label
-        {
-            Text = "速度(%)",
-            ForeColor = Color.White,
-            Size = new Size(58, 18)
-        };
-        panel.Controls.Add(speedLabel);
-
-        _speedBox.Size = new Size(72, 23);
-        _speedBox.Minimum = 10;
-        _speedBox.Maximum = 500;
-        _speedBox.Increment = 10;
-        _speedBox.Value = 100;
-        panel.Controls.Add(_speedBox);
-
-        panel.Resize += (_, _) => LayoutTransportControls(panel, speedLabel);
-        LayoutTransportControls(panel, speedLabel);
-
         _timer.Interval = 16;
         _timer.Tick += TimerOnTick;
     }
@@ -318,16 +249,65 @@ public sealed class PreviewOverlayForm : Form
     {
         base.OnShown(e);
         Activate();
+        ShowHud();
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Escape)
+        if (HandlePreviewShortcut(e.KeyData))
         {
-            Close();
+            e.SuppressKeyPress = true;
+            return;
         }
 
         base.OnKeyDown(e);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        return HandlePreviewShortcut(keyData) || base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private bool HandlePreviewShortcut(Keys keyData)
+    {
+        var keyCode = keyData & Keys.KeyCode;
+        switch (keyCode)
+        {
+            case Keys.Escape:
+                Close();
+                return true;
+            case Keys.Space:
+                TogglePreviewPlayback();
+                return true;
+            case Keys.Left:
+                SeekRelative(-GetKeyboardSeekStep(keyData));
+                return true;
+            case Keys.Right:
+                SeekRelative(GetKeyboardSeekStep(keyData));
+                return true;
+            case Keys.Home:
+            case Keys.D1:
+            case Keys.NumPad1:
+                SeekTo(0);
+                return true;
+            case Keys.End:
+            case Keys.D0:
+            case Keys.NumPad0:
+                SeekTo(_preview.DurationMs);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        var steps = e.Delta / SystemInformation.MouseWheelScrollDelta;
+        if (steps != 0)
+        {
+            SeekRelative(steps * 200);
+        }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -367,27 +347,19 @@ public sealed class PreviewOverlayForm : Form
         base.Dispose(disposing);
     }
 
-    private void LayoutTransportControls(Panel panel, Label speedLabel)
+    private static int GetKeyboardSeekStep(Keys keyData)
     {
-        const int margin = 12;
-        const int buttonGap = 8;
-        var buttonTop = 18;
-        _startButton.Location = new Point(margin, buttonTop);
-        _playButton.Location = new Point(_startButton.Right + buttonGap, buttonTop);
-        _endButton.Location = new Point(_playButton.Right + buttonGap, buttonTop);
+        if ((keyData & Keys.Control) == Keys.Control)
+        {
+            return 100;
+        }
 
-        _speedBox.Location = new Point(panel.ClientSize.Width - _speedBox.Width - margin, 20);
-        speedLabel.Location = new Point(_speedBox.Left - speedLabel.Width - 6, 23);
-
-        var seekLeft = _endButton.Right + 14;
-        var seekRight = speedLabel.Left - 12;
-        _seekBar.Location = new Point(seekLeft, 14);
-        _seekBar.Size = new Size(Math.Max(120, seekRight - seekLeft), 38);
+        return (keyData & Keys.Shift) == Keys.Shift ? 5000 : 1000;
     }
 
     private void TogglePreviewPlayback()
     {
-        if (_timer.Enabled)
+        if (_isPlaying)
         {
             PausePreviewPlayback();
             return;
@@ -395,7 +367,8 @@ public sealed class PreviewOverlayForm : Form
 
         if (_currentMs >= _preview.DurationMs)
         {
-            SetPreviewTime(0);
+            _currentMs = 0;
+            _isSeeking = false;
         }
 
         StartPreviewPlayback();
@@ -408,40 +381,112 @@ public sealed class PreviewOverlayForm : Form
             return;
         }
 
-        _playButton.Text = "停止";
+        _isPlaying = true;
         _clock.Restart();
-        _timer.Start();
+        EnsureTimerRunning();
+        ShowHud();
     }
 
     private void PausePreviewPlayback()
     {
-        _timer.Stop();
+        _isPlaying = false;
         _clock.Reset();
-        _playButton.Text = "再生";
+        StopTimerIfIdle();
+        ShowHud();
     }
 
     private void TimerOnTick(object? sender, EventArgs e)
     {
-        var elapsed = _clock.ElapsedMilliseconds;
-        _clock.Restart();
-        var speed = (double)_speedBox.Value / 100.0;
-        var next = _currentMs + (long)Math.Round(elapsed * speed);
-        if (next >= _preview.DurationMs)
+        if (_isSeeking)
         {
-            next = _preview.DurationMs;
-            PausePreviewPlayback();
+            var progress = Math.Clamp(_seekClock.ElapsedMilliseconds / (double)SeekAnimationMs, 0.0, 1.0);
+            var eased = SmoothStep(progress);
+            _currentMs = (long)Math.Round(_seekStartMs + (_seekTargetMs - _seekStartMs) * eased);
+            if (progress >= 1.0)
+            {
+                _currentMs = _seekTargetMs;
+                _isSeeking = false;
+                if (_isPlaying)
+                {
+                    _clock.Restart();
+                }
+            }
         }
 
-        SetPreviewTime(next);
+        if (_isPlaying && !_isSeeking)
+        {
+            var elapsed = _clock.ElapsedMilliseconds;
+            _clock.Restart();
+            var next = _currentMs + elapsed;
+            if (next >= _preview.DurationMs)
+            {
+                next = _preview.DurationMs;
+                _isPlaying = false;
+                _clock.Reset();
+            }
+
+            _currentMs = next;
+        }
+
+        if (_showHud && _hudClock.ElapsedMilliseconds >= HudVisibleMs)
+        {
+            _showHud = false;
+        }
+
+        Invalidate();
+        StopTimerIfIdle();
     }
 
-    private void SetPreviewTime(long timeMs)
+    private void SeekRelative(long deltaMs)
     {
-        _currentMs = Math.Clamp(timeMs, 0, _preview.DurationMs);
-        _updatingSeek = true;
-        _seekBar.Value = (int)Math.Min(_seekBar.Maximum, _currentMs);
-        _updatingSeek = false;
+        SeekTo(_currentMs + deltaMs);
+    }
+
+    private void SeekTo(long timeMs)
+    {
+        var target = Math.Clamp(timeMs, 0, _preview.DurationMs);
+        if (target == _currentMs && !_isSeeking)
+        {
+            ShowHud();
+            return;
+        }
+
+        _seekStartMs = _currentMs;
+        _seekTargetMs = target;
+        _isSeeking = true;
+        _seekClock.Restart();
+        EnsureTimerRunning();
+        ShowHud();
+    }
+
+    private void EnsureTimerRunning()
+    {
+        if (!_timer.Enabled)
+        {
+            _timer.Start();
+        }
+    }
+
+    private void StopTimerIfIdle()
+    {
+        if (!_isPlaying && !_isSeeking && !_showHud)
+        {
+            _timer.Stop();
+        }
+    }
+
+    private void ShowHud()
+    {
+        _showHud = true;
+        _hudClock.Restart();
+        EnsureTimerRunning();
         Invalidate();
+    }
+
+    private static double SmoothStep(double value)
+    {
+        var t = Math.Clamp(value, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
     }
 
     private void DrawCurrentPoint(Graphics graphics, List<Point> progressPath, Color color)
@@ -535,17 +580,37 @@ public sealed class PreviewOverlayForm : Form
 
     private void DrawLegend(Graphics graphics)
     {
-        using var redBrush = new SolidBrush(Color.Red);
-        using var yellowBrush = new SolidBrush(Color.Gold);
-        using var whiteBrush = new SolidBrush(Color.White);
-        using var bgBrush = new SolidBrush(Color.FromArgb(205, Color.Black));
-        var box = new Rectangle(18, 18, 330, 92);
+        if (!_showHud)
+        {
+            return;
+        }
+
+        var remaining = Math.Clamp((HudVisibleMs - _hudClock.ElapsedMilliseconds) / 500.0, 0.0, 1.0);
+        var alphaScale = _hudClock.ElapsedMilliseconds > HudVisibleMs - 500 ? remaining : 1.0;
+        var bgAlpha = (int)Math.Round(190 * alphaScale);
+        var textAlpha = (int)Math.Round(245 * alphaScale);
+        var mutedAlpha = (int)Math.Round(200 * alphaScale);
+        using var whiteBrush = new SolidBrush(Color.FromArgb(textAlpha, Color.White));
+        using var mutedBrush = new SolidBrush(Color.FromArgb(mutedAlpha, Color.Gainsboro));
+        using var bgBrush = new SolidBrush(Color.FromArgb(bgAlpha, Color.Black));
+        var lines = new[]
+        {
+            $"{(_isPlaying ? "再生中" : "停止中")}  {_currentMs:N0} / {_preview.DurationMs:N0} ms",
+            "Space 再生/停止  ←/→ 1秒  Ctrl=100ms  Shift=5秒  Wheel=200ms",
+            "Home または 1 = 先頭   End または 0 = 最後   Esc = 終了"
+        };
+        var width = 610;
+        var height = 76;
+        var screenBox = new Rectangle(
+            _transportBounds.Right - width - 18,
+            _transportBounds.Bottom - height - 18,
+            width,
+            height);
+        var box = ToLocalRectangle(screenBox);
         graphics.FillRectangle(bgBrush, box);
-        graphics.FillRectangle(redBrush, 34, 38, 32, 5);
-        graphics.DrawString("赤: 完全再現", _helpFont, whiteBrush, 74, 30);
-        graphics.FillRectangle(yellowBrush, 34, 66, 32, 5);
-        graphics.DrawString("黄: ノイズ入り", _helpFont, whiteBrush, 74, 58);
-        graphics.DrawString("Esc で終了", _helpFont, whiteBrush, 34, 84);
+        graphics.DrawString(lines[0], _helpFont, whiteBrush, box.Left + 14, box.Top + 10);
+        graphics.DrawString(lines[1], _helpFont, mutedBrush, box.Left + 14, box.Top + 32);
+        graphics.DrawString(lines[2], _helpFont, mutedBrush, box.Left + 14, box.Top + 52);
     }
 
     private Point ToLocal(Point screenPoint)
