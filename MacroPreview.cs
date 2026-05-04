@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Diagnostics;
+using System.IO;
 
 namespace AutomationTool;
 
@@ -308,6 +309,7 @@ public sealed class PreviewOverlayForm : Form
     private readonly Rectangle _virtualBounds;
     private readonly Rectangle _transportBounds;
     private readonly System.Windows.Forms.Timer _timer = new();
+    private readonly PreviewSoundPlayer _soundPlayer = new();
     private readonly Font _markerFont = new("MS UI Gothic", 9F, FontStyle.Bold, GraphicsUnit.Point);
     private readonly Font _helpFont = new("MS UI Gothic", 10F, FontStyle.Regular, GraphicsUnit.Point);
     private readonly Stopwatch _clock = new();
@@ -319,6 +321,7 @@ public sealed class PreviewOverlayForm : Form
     private long _currentMs;
     private long _seekStartMs;
     private long _seekTargetMs;
+    private long _lastSoundTimeMs;
 
     public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount, Screen transportScreen)
     {
@@ -437,6 +440,7 @@ public sealed class PreviewOverlayForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _soundPlayer.Dispose();
             _markerFont.Dispose();
             _helpFont.Dispose();
         }
@@ -479,6 +483,7 @@ public sealed class PreviewOverlayForm : Form
         }
 
         _isPlaying = true;
+        _lastSoundTimeMs = _currentMs;
         _clock.Restart();
         EnsureTimerRunning();
         ShowHud();
@@ -505,6 +510,7 @@ public sealed class PreviewOverlayForm : Form
                 _isSeeking = false;
                 if (_isPlaying)
                 {
+                    _lastSoundTimeMs = _currentMs;
                     _clock.Restart();
                 }
             }
@@ -512,6 +518,7 @@ public sealed class PreviewOverlayForm : Form
 
         if (_isPlaying && !_isSeeking)
         {
+            var previousMs = _currentMs;
             var elapsed = _clock.ElapsedMilliseconds;
             _clock.Restart();
             var next = _currentMs + elapsed;
@@ -523,6 +530,7 @@ public sealed class PreviewOverlayForm : Form
             }
 
             _currentMs = next;
+            PlaySoundsBetween(previousMs, _currentMs);
         }
 
         if (_showHud && _hudClock.ElapsedMilliseconds >= HudVisibleMs)
@@ -578,6 +586,23 @@ public sealed class PreviewOverlayForm : Form
         _hudClock.Restart();
         EnsureTimerRunning();
         Invalidate();
+    }
+
+    private void PlaySoundsBetween(long fromMs, long toMs)
+    {
+        if (toMs < fromMs)
+        {
+            _lastSoundTimeMs = toMs;
+            return;
+        }
+
+        var startMs = Math.Max(fromMs, _lastSoundTimeMs);
+        foreach (var marker in _preview.PerfectMarkers.Where(item => item.TimeMs > startMs && item.TimeMs <= toMs))
+        {
+            _soundPlayer.Play(marker.Kind);
+        }
+
+        _lastSoundTimeMs = toMs;
     }
 
     private static double SmoothStep(double value)
@@ -828,4 +853,90 @@ public sealed class PreviewOverlayForm : Form
     }
 
     private readonly record struct MarkerVisual(int Size, int MarkerAlpha, int TextAlpha, int Width = 2);
+}
+
+internal sealed class PreviewSoundPlayer : IDisposable
+{
+    private readonly Dictionary<MacroEventKind, List<string>> _soundFiles = new();
+    private readonly List<System.Windows.Media.MediaPlayer> _activePlayers = new();
+    private readonly Random _random = new();
+
+    public PreviewSoundPlayer()
+    {
+        var soundsPath = ResolveSoundsPath();
+        AddFiles(MacroEventKind.MouseDown, soundsPath, "click_on-*.opus");
+        AddFiles(MacroEventKind.MouseUp, soundsPath, "click_off-*.opus");
+        AddFiles(MacroEventKind.KeyDown, soundsPath, "keyboard_on-*.opus");
+        AddFiles(MacroEventKind.KeyUp, soundsPath, "keyboard_off-*.opus");
+    }
+
+    public void Play(MacroEventKind kind)
+    {
+        if (!_soundFiles.TryGetValue(kind, out var files) || files.Count == 0)
+        {
+            return;
+        }
+
+        var file = files[_random.Next(files.Count)];
+        var player = new System.Windows.Media.MediaPlayer();
+        player.MediaEnded += (_, _) => DisposePlayer(player);
+        player.MediaFailed += (_, _) => DisposePlayer(player);
+        _activePlayers.Add(player);
+        player.Open(new Uri(file, UriKind.Absolute));
+        player.Play();
+    }
+
+    public void Dispose()
+    {
+        foreach (var player in _activePlayers.ToList())
+        {
+            DisposePlayer(player);
+        }
+    }
+
+    private void AddFiles(MacroEventKind kind, string soundsPath, string pattern)
+    {
+        if (!Directory.Exists(soundsPath))
+        {
+            return;
+        }
+
+        var files = Directory.GetFiles(soundsPath, pattern)
+            .OrderBy(item => item)
+            .ToList();
+        if (files.Count > 0)
+        {
+            _soundFiles[kind] = files;
+        }
+    }
+
+    private void DisposePlayer(System.Windows.Media.MediaPlayer player)
+    {
+        player.Stop();
+        player.Close();
+        _activePlayers.Remove(player);
+    }
+
+    private static string ResolveSoundsPath()
+    {
+        var outputPath = Path.Combine(AppContext.BaseDirectory, "sounds");
+        if (Directory.Exists(outputPath))
+        {
+            return outputPath;
+        }
+
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            var candidate = Path.Combine(current.FullName, "sounds");
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            current = current.Parent;
+        }
+
+        return outputPath;
+    }
 }
