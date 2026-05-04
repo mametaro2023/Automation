@@ -13,6 +13,7 @@ public sealed class MacroPreview
     public List<List<TimedPreviewPoint>> NoisyTimedPaths { get; } = new();
     public List<PreviewMarker> PerfectMarkers { get; } = new();
     public List<List<PreviewMarker>> NoisyMarkers { get; } = new();
+    public List<PreviewInteractionSegment> InteractionSegments { get; } = new();
     public long DurationMs { get; set; }
 }
 
@@ -25,6 +26,13 @@ public sealed class PreviewMarker
 }
 
 public sealed record TimedPreviewPoint(long TimeMs, Point Point);
+
+public sealed record PreviewInteractionSegment(
+    long StartMs,
+    long EndMs,
+    Point Start,
+    Point End,
+    string Text);
 
 public static class MacroPreviewBuilder
 {
@@ -48,6 +56,8 @@ public static class MacroPreviewBuilder
                 preview.PerfectMarkers.Add(CreateMarker(point, macroEvent));
             }
         }
+
+        BuildInteractionSegments(preview, events);
 
         var baseSeed = Environment.TickCount ^ macro.Id.GetHashCode();
         for (var i = 0; i < count; i++)
@@ -190,15 +200,100 @@ public static class MacroPreviewBuilder
             Location = point,
             TimeMs = macroEvent.TimeOffsetMs,
             Kind = macroEvent.Kind,
-            Text = macroEvent.Kind switch
+            Text = GetEventText(macroEvent)
+        };
+    }
+
+    private static void BuildInteractionSegments(MacroPreview preview, List<MacroEvent> events)
+    {
+        for (var i = 0; i < events.Count; i++)
+        {
+            var start = events[i];
+            if (start.Kind == MacroEventKind.MouseDown)
             {
-                MacroEventKind.MouseDown => "MD",
-                MacroEventKind.MouseUp => "MU",
-                MacroEventKind.KeyDown => "KD",
-                MacroEventKind.KeyUp => "KU",
-                MacroEventKind.MouseWheel => "WH",
-                _ => ""
+                var endIndex = FindForward(events, i, item => item.Kind == MacroEventKind.MouseUp && item.Button == start.Button);
+                if (endIndex is not null && TryGetPoint(start, out var startPoint) && TryGetPoint(events[endIndex.Value], out var endPoint))
+                {
+                    preview.InteractionSegments.Add(new PreviewInteractionSegment(
+                        start.TimeOffsetMs,
+                        events[endIndex.Value].TimeOffsetMs,
+                        startPoint,
+                        endPoint,
+                        GetMouseButtonText(start.Button)));
+                }
             }
+            else if (start.Kind == MacroEventKind.KeyDown)
+            {
+                var endIndex = FindForward(events, i, item => item.Kind == MacroEventKind.KeyUp && item.KeyCode == start.KeyCode);
+                if (endIndex is not null && TryGetPoint(start, out var startPoint) && TryGetPoint(events[endIndex.Value], out var endPoint))
+                {
+                    preview.InteractionSegments.Add(new PreviewInteractionSegment(
+                        start.TimeOffsetMs,
+                        events[endIndex.Value].TimeOffsetMs,
+                        startPoint,
+                        endPoint,
+                        GetKeyText(start.KeyCode)));
+                }
+            }
+        }
+    }
+
+    private static int? FindForward(IReadOnlyList<MacroEvent> events, int index, Func<MacroEvent, bool> predicate)
+    {
+        for (var i = index + 1; i < events.Count; i++)
+        {
+            if (predicate(events[i]))
+            {
+                return i;
+            }
+        }
+
+        return null;
+    }
+
+    private static string GetEventText(MacroEvent macroEvent)
+    {
+        return macroEvent.Kind switch
+        {
+            MacroEventKind.MouseDown => $"{GetMouseButtonText(macroEvent.Button)} ↓",
+            MacroEventKind.MouseUp => $"{GetMouseButtonText(macroEvent.Button)} ↑",
+            MacroEventKind.KeyDown => $"{GetKeyText(macroEvent.KeyCode)} ↓",
+            MacroEventKind.KeyUp => $"{GetKeyText(macroEvent.KeyCode)} ↑",
+            MacroEventKind.MouseWheel => macroEvent.WheelDelta >= 0 ? "Wheel +" : "Wheel -",
+            _ => ""
+        };
+    }
+
+    private static string GetMouseButtonText(RecordedMouseButton button)
+    {
+        return button switch
+        {
+            RecordedMouseButton.Left => "Left",
+            RecordedMouseButton.Right => "Right",
+            RecordedMouseButton.Middle => "Middle",
+            RecordedMouseButton.XButton1 => "X1",
+            RecordedMouseButton.XButton2 => "X2",
+            _ => "Mouse"
+        };
+    }
+
+    private static string GetKeyText(Keys key)
+    {
+        return key switch
+        {
+            Keys.ControlKey or Keys.LControlKey or Keys.RControlKey => "Ctrl",
+            Keys.Menu or Keys.LMenu or Keys.RMenu => "Alt",
+            Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey => "Shift",
+            Keys.Escape => "Esc",
+            Keys.Space => "Space",
+            Keys.Return => "Enter",
+            Keys.Back => "Backspace",
+            Keys.Capital => "CapsLock",
+            >= Keys.A and <= Keys.Z => key.ToString(),
+            >= Keys.F1 and <= Keys.F24 => key.ToString(),
+            >= Keys.D0 and <= Keys.D9 => ((int)(key - Keys.D0)).ToString(),
+            >= Keys.NumPad0 and <= Keys.NumPad9 => $"Num{(int)(key - Keys.NumPad0)}",
+            _ => key.ToString()
         };
     }
 }
@@ -207,6 +302,7 @@ public sealed class PreviewOverlayForm : Form
 {
     private const int SeekAnimationMs = 160;
     private const int HudVisibleMs = 1800;
+    private const int EventAnimationMs = 260;
 
     private readonly MacroPreview _preview;
     private readonly Rectangle _virtualBounds;
@@ -324,12 +420,13 @@ public sealed class PreviewOverlayForm : Form
 
         var progressPath = GetProgressPath(_preview.PerfectTimedPath, _currentMs);
         DrawPath(e.Graphics, progressPath, Color.Red, 5, 245);
+        DrawActiveInteractionSegment(e.Graphics);
         DrawCurrentPoint(e.Graphics, progressPath, Color.Red);
 
-        DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red, 230, true);
+        DrawMarkers(e.Graphics, _preview.PerfectMarkers, Color.Red, true, true);
         foreach (var markers in _preview.NoisyMarkers)
         {
-            DrawMarkers(e.Graphics, markers, Color.Gold, 95, false);
+            DrawMarkers(e.Graphics, markers, Color.Gold, false, false);
         }
 
         DrawLegend(e.Graphics);
@@ -528,27 +625,121 @@ public sealed class PreviewOverlayForm : Form
         graphics.DrawLines(pen, points.Select(ToLocal).ToArray());
     }
 
-    private void DrawMarkers(Graphics graphics, List<PreviewMarker> markers, Color color, int alpha = 210, bool showText = true)
+    private void DrawActiveInteractionSegment(Graphics graphics)
     {
-        using var pen = new Pen(Color.FromArgb(Math.Min(255, alpha + 40), color), 2);
-        using var textBrush = new SolidBrush(Color.White);
-        using var outlineBrush = new SolidBrush(Color.Black);
+        var segment = _preview.InteractionSegments
+            .FirstOrDefault(item => _currentMs >= item.StartMs && _currentMs <= item.EndMs);
+        if (segment is null)
+        {
+            return;
+        }
 
+        var points = GetSegmentPath(_preview.PerfectTimedPath, segment, _currentMs);
+        DrawPath(graphics, points, Color.FromArgb(95, 220, 255), 6, 245);
+    }
+
+    private static List<Point> GetSegmentPath(
+        List<TimedPreviewPoint> path,
+        PreviewInteractionSegment segment,
+        long currentMs)
+    {
+        var endMs = Math.Min(currentMs, segment.EndMs);
+        var points = new List<Point> { segment.Start };
+        points.AddRange(path
+            .Where(item => item.TimeMs > segment.StartMs && item.TimeMs < endMs)
+            .Select(item => item.Point));
+        points.Add(InterpolatePoint(path, endMs) ?? segment.End);
+        return points;
+    }
+
+    private static Point? InterpolatePoint(List<TimedPreviewPoint> path, long timeMs)
+    {
+        if (path.Count == 0)
+        {
+            return null;
+        }
+
+        var previous = path[0];
+        foreach (var next in path.Skip(1))
+        {
+            if (next.TimeMs < timeMs)
+            {
+                previous = next;
+                continue;
+            }
+
+            var span = Math.Max(1, next.TimeMs - previous.TimeMs);
+            var t = Math.Clamp((timeMs - previous.TimeMs) / (double)span, 0.0, 1.0);
+            return new Point(
+                (int)Math.Round(previous.Point.X + (next.Point.X - previous.Point.X) * t),
+                (int)Math.Round(previous.Point.Y + (next.Point.Y - previous.Point.Y) * t));
+        }
+
+        return path[^1].Point;
+    }
+
+    private void DrawMarkers(Graphics graphics, List<PreviewMarker> markers, Color color, bool showText, bool animate)
+    {
         foreach (var marker in markers)
         {
             var point = ToLocal(marker.Location);
-            DrawCrossMarker(graphics, pen, point, marker.Kind);
+            var visual = animate
+                ? GetMarkerVisual(marker)
+                : new MarkerVisual(7, 70, 70);
+            using var pen = new Pen(Color.FromArgb(visual.MarkerAlpha, color), visual.Width);
+            DrawCrossMarker(graphics, pen, point, marker.Kind, visual.Size);
 
             if (showText && !string.IsNullOrEmpty(marker.Text))
             {
-                DrawOutlinedText(graphics, marker.Text, point.X + 10, point.Y + 4, textBrush, outlineBrush);
+                using var textBrush = new SolidBrush(Color.FromArgb(visual.TextAlpha, Color.White));
+                using var outlineBrush = new SolidBrush(Color.FromArgb(visual.TextAlpha, Color.Black));
+                DrawOutlinedText(graphics, marker.Text, point.X + 12, point.Y + 5, textBrush, outlineBrush);
             }
         }
     }
 
-    private static void DrawCrossMarker(Graphics graphics, Pen pen, Point point, MacroEventKind kind)
+    private MarkerVisual GetMarkerVisual(PreviewMarker marker)
     {
-        var size = kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 9 : 7;
+        var delta = _currentMs - marker.TimeMs;
+        var isRelease = marker.Kind is MacroEventKind.MouseUp or MacroEventKind.KeyUp;
+        var baseAlpha = _currentMs >= marker.TimeMs
+            ? isRelease ? 55 : 150
+            : 55;
+        var textAlpha = _currentMs >= marker.TimeMs
+            ? isRelease ? 95 : 220
+            : 90;
+        var baseSize = marker.Kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 9 : 7;
+        var width = _currentMs >= marker.TimeMs ? 2 : 1;
+
+        if (marker.Kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown
+            && delta >= 0 && delta <= EventAnimationMs)
+        {
+            var progress = delta / (double)EventAnimationMs;
+            var size = (int)Math.Round(Lerp(24, baseSize, SmoothStep(progress)));
+            var alpha = (int)Math.Round(Lerp(45, 255, SmoothStep(progress)));
+            return new MarkerVisual(size, alpha, alpha, 3);
+        }
+
+        if (marker.Kind is MacroEventKind.MouseUp or MacroEventKind.KeyUp
+            && delta >= 0 && delta <= EventAnimationMs)
+        {
+            var progress = delta / (double)EventAnimationMs;
+            var size = (int)Math.Round(Lerp(baseSize, 24, SmoothStep(progress)));
+            var alpha = (int)Math.Round(Lerp(255, 30, SmoothStep(progress)));
+            return new MarkerVisual(size, alpha, alpha, 3);
+        }
+
+        return new MarkerVisual(baseSize, baseAlpha, textAlpha, width);
+    }
+
+    private static double Lerp(double from, double to, double progress)
+    {
+        return from + (to - from) * progress;
+    }
+
+    private static void DrawCrossMarker(Graphics graphics, Pen pen, Point point, MacroEventKind kind, int? overrideSize = null)
+    {
+        var size = overrideSize ?? (kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 9 : 7);
         graphics.DrawLine(pen, point.X - size, point.Y - size, point.X + size, point.Y + size);
         graphics.DrawLine(pen, point.X - size, point.Y + size, point.X + size, point.Y - size);
 
@@ -635,4 +826,6 @@ public sealed class PreviewOverlayForm : Form
         var bottom = SystemInformation.VirtualScreen.Bottom;
         return Rectangle.FromLTRB(left, top, right, bottom);
     }
+
+    private readonly record struct MarkerVisual(int Size, int MarkerAlpha, int TextAlpha, int Width = 2);
 }

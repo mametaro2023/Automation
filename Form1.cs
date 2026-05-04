@@ -6,6 +6,13 @@ public partial class Form1 : Form
     private readonly MacroPlayer _player = new();
     private readonly HotkeyManager _hotkeys = new();
     private readonly List<Macro> _macros = new();
+    private readonly ToolTip _toolTip = new()
+    {
+        AutoPopDelay = 12000,
+        InitialDelay = 350,
+        ReshowDelay = 100,
+        ShowAlways = true
+    };
 
     private Button _recordButton = null!;
     private Button _stopButton = null!;
@@ -262,6 +269,8 @@ public partial class Form1 : Form
         };
         _rightSplit.Panel2.Controls.Add(_summaryLabel);
 
+        ConfigureParameterTooltips();
+
         _statusLabel = new ToolStripStatusLabel("待機中。");
         var statusStrip = new StatusStrip
         {
@@ -334,6 +343,21 @@ public partial class Form1 : Form
         control.Size = new Size(Math.Max(80, parent.Width - labelWidth - 36), 23);
         control.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         parent.Controls.Add(control);
+    }
+
+    private void ConfigureParameterTooltips()
+    {
+        _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
+        _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
+        _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は負荷を抑え、標準は通常用途、高精度は細かい動きを多めに記録します。");
+        _toolTip.SetToolTip(_pollingRateBox, "マウス位置を確認する頻度です。高いほど細かく記録しますが、負荷とイベント数が増えます。通常は200Hz程度で十分です。");
+        _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
+        _toolTip.SetToolTip(_playbackSpeedBox, "再生全体の速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
+        _toolTip.SetToolTip(_coordNoiseBox, "クリック押下/解放の座標に加える小さな揺れです。重要点なので大きくしすぎないでください。");
+        _toolTip.SetToolTip(_timeNoiseBox, "クリックやキー入力の間隔に加える時間揺れです。機械的な一定間隔を避けます。");
+        _toolTip.SetToolTip(_trajectoryNoiseBox, "クリック以外のマウス軌道に加える曲がり具合です。大きいほど毎回違う軌道になります。");
+        _toolTip.SetToolTip(_accelNoiseBox, "マウス移動中の加速・減速の偏りです。人間らしい速度変化を作ります。");
+        _toolTip.SetToolTip(_previewPathCountBox, "プレビューで表示するノイズ入り軌道の本数です。多いほど揺れ幅を確認できますが画面は混みます。");
     }
 
     private void RecordButtonOnClick(object? sender, EventArgs e)
