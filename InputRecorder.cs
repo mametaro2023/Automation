@@ -330,7 +330,7 @@ public sealed class InputRecorder : IDisposable
     {
         if (!_timerResolutionRaised)
         {
-            _timerResolutionRaised = TimeBeginPeriod(1) == 0;
+            _timerResolutionRaised = TimeBeginPeriodNative(1) == 0;
         }
     }
 
@@ -338,16 +338,16 @@ public sealed class InputRecorder : IDisposable
     {
         if (_timerResolutionRaised)
         {
-            TimeEndPeriod(1);
+            TimeEndPeriodNative(1);
             _timerResolutionRaised = false;
         }
     }
 
-    [DllImport("winmm.dll")]
-    private static extern uint TimeBeginPeriod(uint periodMs);
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", ExactSpelling = true)]
+    private static extern uint TimeBeginPeriodNative(uint periodMs);
 
-    [DllImport("winmm.dll")]
-    private static extern uint TimeEndPeriod(uint periodMs);
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", ExactSpelling = true)]
+    private static extern uint TimeEndPeriodNative(uint periodMs);
 
     public void Dispose()
     {
