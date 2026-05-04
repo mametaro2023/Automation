@@ -19,6 +19,7 @@ public sealed class InputRecorder : IDisposable
     private bool _dragging;
     private CancellationTokenSource? _pollingCts;
     private Task? _pollingTask;
+    private bool _timerResolutionRaised;
 
     public InputRecorder()
     {
@@ -60,10 +61,20 @@ public sealed class InputRecorder : IDisposable
 
     public List<MacroEvent> Stop()
     {
+        var pollingTask = _pollingTask;
         _pollingCts?.Cancel();
+        try
+        {
+            pollingTask?.Wait(150);
+        }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is OperationCanceledException or TaskCanceledException))
+        {
+        }
+
         _pollingCts?.Dispose();
         _pollingCts = null;
         _pollingTask = null;
+        RestoreTimerResolution();
 
         if (_mouseHook != IntPtr.Zero)
         {
@@ -93,20 +104,30 @@ public sealed class InputRecorder : IDisposable
     {
         _pollingCts = new CancellationTokenSource();
         var token = _pollingCts.Token;
-        var intervalMs = Math.Max(1, (int)Math.Round(1000.0 / Math.Clamp(_options.MousePollingRateHz, 1, 1000)));
+        var pollingHz = Math.Clamp(_options.MousePollingRateHz, 1, 1000);
+        var intervalTicks = Math.Max(1, Stopwatch.Frequency / pollingHz);
+        RaiseTimerResolution();
 
-        _pollingTask = Task.Run(async () =>
+        _pollingTask = Task.Run(() =>
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(intervalMs));
-            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            try
             {
-                var point = Cursor.Position;
-                if (ShouldIgnoreMousePoint?.Invoke(point) == true)
+                var nextTick = Stopwatch.GetTimestamp();
+                while (!token.IsCancellationRequested)
                 {
-                    continue;
-                }
+                    var timestampMs = TicksToMilliseconds(_clock.ElapsedTicks);
+                    var point = Cursor.Position;
+                    if (ShouldIgnoreMousePoint?.Invoke(point) != true)
+                    {
+                        RecordMoveIfNeeded(point, timestampMs);
+                    }
 
-                RecordMoveIfNeeded(point);
+                    nextTick += intervalTicks;
+                    WaitUntil(nextTick, token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
             }
         }, token);
     }
@@ -214,14 +235,13 @@ public sealed class InputRecorder : IDisposable
         }
     }
 
-    private void RecordMoveIfNeeded(Point point)
+    private void RecordMoveIfNeeded(Point point, long timestampMs)
     {
-        var now = _clock.ElapsedMilliseconds;
         var minDistance = _dragging ? _options.DragMoveMinDistancePx : _options.MoveMinDistancePx;
 
         if (_lastMovePoint is null)
         {
-            RecordMove(point, now);
+            RecordMove(point, timestampMs);
             return;
         }
 
@@ -230,7 +250,7 @@ public sealed class InputRecorder : IDisposable
         var distanceSquared = dx * dx + dy * dy;
         if (distanceSquared >= minDistance * minDistance)
         {
-            RecordMove(point, now);
+            RecordMove(point, timestampMs);
         }
     }
 
@@ -243,7 +263,7 @@ public sealed class InputRecorder : IDisposable
             Kind = MacroEventKind.MouseMove,
             X = point.X,
             Y = point.Y
-        });
+        }, timestamp);
     }
 
     private void RecordButton(MacroEventKind kind, RecordedMouseButton button, Point point)
@@ -257,9 +277,9 @@ public sealed class InputRecorder : IDisposable
         });
     }
 
-    private void Record(MacroEvent macroEvent)
+    private void Record(MacroEvent macroEvent, long? timestampMs = null)
     {
-        macroEvent.TimeOffsetMs = _clock.ElapsedMilliseconds;
+        macroEvent.TimeOffsetMs = timestampMs ?? _clock.ElapsedMilliseconds;
         lock (_eventsLock)
         {
             Events.Add(macroEvent);
@@ -273,6 +293,61 @@ public sealed class InputRecorder : IDisposable
         var xButton = (mouseData >> 16) & 0xffff;
         return xButton == 2 ? RecordedMouseButton.XButton2 : RecordedMouseButton.XButton1;
     }
+
+    private static long TicksToMilliseconds(long ticks)
+    {
+        return ticks * 1000 / Stopwatch.Frequency;
+    }
+
+    private static void WaitUntil(long targetTicks, CancellationToken token)
+    {
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            var remainingTicks = targetTicks - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0)
+            {
+                return;
+            }
+
+            var remainingMs = remainingTicks * 1000.0 / Stopwatch.Frequency;
+            if (remainingMs > 2.0)
+            {
+                Thread.Sleep(Math.Max(1, (int)remainingMs - 1));
+            }
+            else if (remainingMs > 0.5)
+            {
+                Thread.Sleep(0);
+            }
+            else
+            {
+                Thread.SpinWait(80);
+            }
+        }
+    }
+
+    private void RaiseTimerResolution()
+    {
+        if (!_timerResolutionRaised)
+        {
+            _timerResolutionRaised = TimeBeginPeriod(1) == 0;
+        }
+    }
+
+    private void RestoreTimerResolution()
+    {
+        if (_timerResolutionRaised)
+        {
+            TimeEndPeriod(1);
+            _timerResolutionRaised = false;
+        }
+    }
+
+    [DllImport("winmm.dll")]
+    private static extern uint TimeBeginPeriod(uint periodMs);
+
+    [DllImport("winmm.dll")]
+    private static extern uint TimeEndPeriod(uint periodMs);
 
     public void Dispose()
     {
