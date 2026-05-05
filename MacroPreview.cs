@@ -881,7 +881,11 @@ public sealed class PreviewOverlayForm : Form
             EndCap = LineCap.Round,
             LineJoin = LineJoin.Round
         };
-        graphics.DrawLines(pen, points.Select(ToLocal).ToArray());
+        var displayPoints = DrawingPathOptimizer.SimplifyForDisplay(points.Select(ToLocal));
+        if (displayPoints.Count >= 2)
+        {
+            graphics.DrawLines(pen, displayPoints.ToArray());
+        }
     }
 
     private void DrawActiveInteractionSegment(Graphics graphics)

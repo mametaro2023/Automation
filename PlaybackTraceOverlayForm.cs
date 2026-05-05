@@ -18,6 +18,10 @@ public sealed class PlaybackTraceOverlayForm : Form
     private readonly Rectangle _virtualBounds;
     private readonly System.Windows.Forms.Timer _timer = new();
     private readonly System.Diagnostics.Stopwatch _planRevealClock = new();
+    private GraphicsPath? _plannedPath;
+    private GraphicsPath? _actualPath;
+    private bool _actualPathDirty;
+    private bool _paintPending;
     private Point? _lastPoint;
 
     public PlaybackTraceOverlayForm()
@@ -35,7 +39,13 @@ public sealed class PlaybackTraceOverlayForm : Form
         Text = "再生軌道";
 
         _timer.Interval = GetTraceTimerIntervalMs();
-        _timer.Tick += (_, _) => Invalidate();
+        _timer.Tick += (_, _) =>
+        {
+            if (_planRevealClock.IsRunning)
+            {
+                RequestPaint();
+            }
+        };
     }
 
     protected override CreateParams CreateParams
@@ -84,8 +94,11 @@ public sealed class PlaybackTraceOverlayForm : Form
             }
         }
 
+        ReplacePlannedPath(DrawingPathOptimizer.CreateSmoothPath(_plannedPoints));
+        ReplaceActualPath(null);
+        _actualPathDirty = false;
         _planRevealClock.Restart();
-        Invalidate();
+        RequestPaint();
     }
 
     public void AddPoint(Point screenPoint)
@@ -114,20 +127,34 @@ public sealed class PlaybackTraceOverlayForm : Form
             {
                 _actualPoints.RemoveRange(0, _actualPoints.Count - MaxPoints);
             }
+
+            _actualPathDirty = true;
         }
 
         _lastPoint = point;
+        RequestPaint();
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        _paintPending = false;
         base.OnPaint(e);
         List<Point> plannedPoints;
         List<Point> actualPoints;
+        GraphicsPath? plannedPath;
+        GraphicsPath? actualPath;
         lock (_lock)
         {
             plannedPoints = _plannedPoints.ToList();
             actualPoints = _actualPoints.ToList();
+            if (_actualPathDirty)
+            {
+                ReplaceActualPath(DrawingPathOptimizer.CreateSmoothPath(_actualPoints));
+                _actualPathDirty = false;
+            }
+
+            plannedPath = _plannedPath;
+            actualPath = _actualPath;
         }
 
         if (plannedPoints.Count < 2 && actualPoints.Count < 2)
@@ -146,8 +173,10 @@ public sealed class PlaybackTraceOverlayForm : Form
             _planRevealClock.Stop();
         }
 
-        var visiblePlan = GetPathPrefix(plannedPoints, SmoothStep(planProgress));
-        if (visiblePlan.Count >= 2)
+        var visiblePlan = planProgress < 1.0
+            ? GetPathPrefix(plannedPoints, SmoothStep(planProgress))
+            : null;
+        if ((visiblePlan?.Count ?? plannedPoints.Count) >= 2)
         {
             using var plannedGlow = new Pen(Color.FromArgb(55, 0, 0, 0), 5)
             {
@@ -161,9 +190,17 @@ public sealed class PlaybackTraceOverlayForm : Form
                 EndCap = LineCap.Round,
                 LineJoin = LineJoin.Round
             };
-            using var plannedPath = CreateSmoothPath(visiblePlan);
-            e.Graphics.DrawPath(plannedGlow, plannedPath);
-            e.Graphics.DrawPath(plannedPen, plannedPath);
+            if (visiblePlan is not null)
+            {
+                using var revealPath = DrawingPathOptimizer.CreateSmoothPath(visiblePlan);
+                e.Graphics.DrawPath(plannedGlow, revealPath);
+                e.Graphics.DrawPath(plannedPen, revealPath);
+            }
+            else if (plannedPath is not null)
+            {
+                e.Graphics.DrawPath(plannedGlow, plannedPath);
+                e.Graphics.DrawPath(plannedPen, plannedPath);
+            }
         }
 
         if (actualPoints.Count < 2)
@@ -183,7 +220,11 @@ public sealed class PlaybackTraceOverlayForm : Form
             EndCap = LineCap.Round,
             LineJoin = LineJoin.Round
         };
-        using var actualPath = CreateSmoothPath(actualPoints);
+        if (actualPath is null)
+        {
+            return;
+        }
+
         e.Graphics.DrawPath(glow, actualPath);
         e.Graphics.DrawPath(pen, actualPath);
     }
@@ -196,6 +237,8 @@ public sealed class PlaybackTraceOverlayForm : Form
         {
             _timer.Dispose();
             _planRevealClock.Stop();
+            ReplacePlannedPath(null);
+            ReplaceActualPath(null);
         }
 
         base.Dispose(disposing);
@@ -213,69 +256,6 @@ public sealed class PlaybackTraceOverlayForm : Form
     private Point ToOverlayPoint(Point screenPoint)
     {
         return new Point(screenPoint.X - _virtualBounds.Left, screenPoint.Y - _virtualBounds.Top);
-    }
-
-    private static GraphicsPath CreateSmoothPath(IReadOnlyList<Point> points)
-    {
-        var path = new GraphicsPath();
-        if (points.Count == 0)
-        {
-            return path;
-        }
-
-        var simplified = Simplify(points);
-        if (simplified.Count == 1)
-        {
-            path.AddEllipse(simplified[0].X - 1, simplified[0].Y - 1, 2, 2);
-            return path;
-        }
-
-        if (simplified.Count < 4)
-        {
-            path.AddLines(simplified.Select(point => new PointF(point.X, point.Y)).ToArray());
-            return path;
-        }
-
-        path.StartFigure();
-        for (var i = 0; i < simplified.Count - 1; i++)
-        {
-            var p0 = simplified[Math.Max(0, i - 1)];
-            var p1 = simplified[i];
-            var p2 = simplified[i + 1];
-            var p3 = simplified[Math.Min(simplified.Count - 1, i + 2)];
-            var c1 = new PointF(
-                p1.X + (p2.X - p0.X) / 6f,
-                p1.Y + (p2.Y - p0.Y) / 6f);
-            var c2 = new PointF(
-                p2.X - (p3.X - p1.X) / 6f,
-                p2.Y - (p3.Y - p1.Y) / 6f);
-
-            path.AddBezier(
-                new PointF(p1.X, p1.Y),
-                c1,
-                c2,
-                new PointF(p2.X, p2.Y));
-        }
-
-        return path;
-    }
-
-    private static List<Point> Simplify(IReadOnlyList<Point> points)
-    {
-        var simplified = new List<Point>(points.Count);
-        Point? previous = null;
-        foreach (var point in points)
-        {
-            if (previous == point)
-            {
-                continue;
-            }
-
-            simplified.Add(point);
-            previous = point;
-        }
-
-        return simplified;
     }
 
     private static List<Point> GetPathPrefix(IReadOnlyList<Point> points, double progress)
@@ -368,5 +348,28 @@ public sealed class PlaybackTraceOverlayForm : Form
 
         var hertz = (int)devMode.DmDisplayFrequency;
         return hertz is >= 30 and <= 1000 ? hertz : null;
+    }
+
+    private void ReplacePlannedPath(GraphicsPath? path)
+    {
+        _plannedPath?.Dispose();
+        _plannedPath = path;
+    }
+
+    private void ReplaceActualPath(GraphicsPath? path)
+    {
+        _actualPath?.Dispose();
+        _actualPath = path;
+    }
+
+    private void RequestPaint()
+    {
+        if (_paintPending || IsDisposed)
+        {
+            return;
+        }
+
+        _paintPending = true;
+        Invalidate();
     }
 }

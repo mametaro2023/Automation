@@ -1092,8 +1092,9 @@ public sealed class MacroTrimEditorForm : Form
             var points = events
                 .Where(IsDrawablePoint)
                 .Select(item => mapper(new Point(item.X, item.Y)))
-                .ToArray();
-            if (points.Length < 2)
+                .ToList();
+            var displayPoints = DrawingPathOptimizer.SimplifyForDisplay(points);
+            if (displayPoints.Count < 2)
             {
                 return;
             }
@@ -1104,7 +1105,7 @@ public sealed class MacroTrimEditorForm : Form
                 EndCap = LineCap.Round,
                 LineJoin = LineJoin.Round
             };
-            graphics.DrawLines(pen, points);
+            graphics.DrawLines(pen, displayPoints.ToArray());
         }
 
         private static int DistanceSquared(Point a, Point b)
