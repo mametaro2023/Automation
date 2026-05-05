@@ -40,6 +40,7 @@ public sealed class Macro
     public string Name { get; set; } = "New Macro";
     public HotkeyGesture Hotkey { get; set; } = new();
     public RecordingOptions Recording { get; set; } = RecordingOptions.Standard();
+    public NoiseSettings Noise { get; set; } = new();
     public List<MacroEvent> Events { get; set; } = new();
 
     [JsonIgnore]
@@ -84,7 +85,7 @@ public sealed class RecordingOptions
     public static RecordingOptions Lightweight() => new()
     {
         Name = "軽量",
-        MousePollingRateHz = 100,
+        MousePollingRateHz = 60,
         MoveMinDistancePx = 4,
         DragMoveMinDistancePx = 2
     };
@@ -94,7 +95,7 @@ public sealed class RecordingOptions
     public static RecordingOptions HighPrecision() => new()
     {
         Name = "高精度",
-        MousePollingRateHz = 200,
+        MousePollingRateHz = 1000,
         MoveMinDistancePx = 1,
         DragMoveMinDistancePx = 1
     };

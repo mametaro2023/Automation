@@ -546,10 +546,24 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
+        var selectedWasInsideTrim = _events[index].TimeOffsetMs <= _endTrack.Value;
+        var adjustedEndMs = selectedWasInsideTrim
+            ? _endTrack.Value + delta
+            : (long?)null;
+
         SaveUndoState();
         for (var i = index; i < _events.Count; i++)
         {
             _events[i].TimeOffsetMs = Math.Max(0, _events[i].TimeOffsetMs + delta);
+        }
+
+        if (adjustedEndMs is not null)
+        {
+            UpdateTrackRange();
+            _endTrack.Value = Math.Clamp(
+                (int)Math.Min(int.MaxValue, Math.Max(_startTrack.Value + 1L, adjustedEndMs.Value)),
+                Math.Min(_endTrack.Maximum, _startTrack.Value + 1),
+                _endTrack.Maximum);
         }
 
         RefreshEditor();

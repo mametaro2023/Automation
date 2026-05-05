@@ -29,7 +29,6 @@ public partial class Form1 : Form
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
     private ComboBox _densityBox = null!;
-    private NumericUpDown _pollingRateBox = null!;
     private NumericUpDown _countdownBox = null!;
     private NumericUpDown _coordNoiseBox = null!;
     private NumericUpDown _timeNoiseBox = null!;
@@ -127,7 +126,7 @@ public partial class Form1 : Form
         _playButton = CreateButton("再生", PlayButtonOnClick);
         _editButton = CreateButton("編集", EditButtonOnClick);
         _deleteButton = CreateButton("削除", DeleteButtonOnClick);
-        _saveButton = CreateButton("保存", SaveButtonOnClick);
+        _saveButton = CreateButton("出力", SaveButtonOnClick);
         _loadButton = CreateButton("読込", LoadButtonOnClick);
         _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
         topPanel.Controls.AddRange(new Control[]
@@ -215,28 +214,20 @@ public partial class Form1 : Form
         };
         _densityBox.Items.AddRange(new object[] { "軽量", "標準", "高精度" });
         _densityBox.SelectedIndex = 1;
-        _densityBox.SelectedIndexChanged += (_, _) => ApplyDensityDefaults();
         AddLabeledControl(recordGroup, "密度", _densityBox, 22, 95);
-        AddLabeledControl(recordGroup, "ポーリングHz", _pollingRateBox = new NumericUpDown
-        {
-            Minimum = 10,
-            Maximum = 1000,
-            Increment = 10,
-            Value = 200
-        }, 54, 95);
         AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 60,
             Value = 3
-        }, 86, 95);
+        }, 54, 95);
         AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
         {
             Minimum = 10,
             Maximum = 500,
             Increment = 10,
             Value = 100
-        }, 118, 95);
+        }, 86, 95);
 
         var noiseGroup = CreateGroup("ノイズ");
         settingsPanel.Controls.Add(noiseGroup, 1, 1);
@@ -270,6 +261,7 @@ public partial class Form1 : Form
             Maximum = 10,
             Value = 3
         }, 130, 118);
+        WireNoiseSettingChanges();
 
         _summaryLabel = new Label
         {
@@ -361,8 +353,7 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
         _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
         _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
-        _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は負荷を抑え、標準は通常用途、高精度は細かい動きを多めに記録します。");
-        _toolTip.SetToolTip(_pollingRateBox, "マウス位置を確認する頻度です。高いほど細かく記録しますが、負荷とイベント数が増えます。通常は200Hz程度で十分です。");
+        _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量=60Hz、標準=200Hz、高精度=1000Hzでマウス位置を確認します。");
         _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
         _toolTip.SetToolTip(_playbackSpeedBox, "再生全体の速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
         _toolTip.SetToolTip(_coordNoiseBox, "クリック押下/解放の座標に加える小さな揺れです。重要点なので大きくしすぎないでください。");
@@ -457,13 +448,7 @@ public partial class Form1 : Form
             return;
         }
 
-        var noise = new NoiseSettings
-        {
-            CoordinateJitterPx = (int)_coordNoiseBox.Value,
-            TimeJitterPercent = (int)_timeNoiseBox.Value,
-            AccelerationJitterPercent = (int)_accelNoiseBox.Value,
-            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
-        };
+        var noise = GetNoiseSettings(macro);
         using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value, Screen.FromControl(this));
         overlay.ShowDialog(this);
     }
@@ -530,7 +515,7 @@ public partial class Form1 : Form
         }
 
         MacroStore.Save(dialog.FileName, _macros);
-        SetStatus($"保存しました: {dialog.FileName}");
+        SetStatus($"出力しました: {dialog.FileName}");
     }
 
     private void LoadButtonOnClick(object? sender, EventArgs e)
@@ -572,6 +557,7 @@ public partial class Form1 : Form
                         ? $"マクロ {DateTime.Now:yyyyMMdd HHmmss}"
                         : _nameBox.Text.Trim(),
                     Recording = GetRecordingOptions(),
+                    Noise = GetNoiseSettings(),
                     Events = events
                 };
                 _macros.Add(macro);
@@ -633,13 +619,7 @@ public partial class Form1 : Form
         }
 
         UpdateButtons();
-        var noise = new NoiseSettings
-        {
-            CoordinateJitterPx = (int)_coordNoiseBox.Value,
-            TimeJitterPercent = (int)_timeNoiseBox.Value,
-            AccelerationJitterPercent = (int)_accelNoiseBox.Value,
-            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
-        };
+        var noise = GetNoiseSettings(macro);
         await _player.PlayAsync(macro, noise, (int)_playbackSpeedBox.Value, SetStatus);
         UpdateButtons();
     }
@@ -650,6 +630,7 @@ public partial class Form1 : Form
         _updatingSelection = true;
         _nameBox.Text = macro?.Name ?? "";
         _hotkeyBox.Text = macro?.Hotkey.ToString() ?? "";
+        SetNoiseControls(macro?.Noise ?? new NoiseSettings());
         _updatingSelection = false;
         RefreshSummary(macro);
         UpdateButtons();
@@ -771,19 +752,51 @@ public partial class Form1 : Form
             2 => RecordingOptions.HighPrecision(),
             _ => RecordingOptions.Standard()
         };
-        options.MousePollingRateHz = (int)_pollingRateBox.Value;
         return options;
     }
 
-    private void ApplyDensityDefaults()
+    private NoiseSettings GetNoiseSettings(Macro? macro = null)
     {
-        var rate = _densityBox.SelectedIndex switch
+        return macro?.Noise ?? new NoiseSettings
         {
-            0 => 100,
-            2 => 200,
-            _ => 200
+            CoordinateJitterPx = (int)_coordNoiseBox.Value,
+            TimeJitterPercent = (int)_timeNoiseBox.Value,
+            AccelerationJitterPercent = (int)_accelNoiseBox.Value,
+            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
         };
-        _pollingRateBox.Value = rate;
+    }
+
+    private void SetNoiseControls(NoiseSettings noise)
+    {
+        _coordNoiseBox.Value = Math.Clamp(noise.CoordinateJitterPx, (int)_coordNoiseBox.Minimum, (int)_coordNoiseBox.Maximum);
+        _timeNoiseBox.Value = Math.Clamp(noise.TimeJitterPercent, (int)_timeNoiseBox.Minimum, (int)_timeNoiseBox.Maximum);
+        _accelNoiseBox.Value = Math.Clamp(noise.AccelerationJitterPercent, (int)_accelNoiseBox.Minimum, (int)_accelNoiseBox.Maximum);
+        _trajectoryNoiseBox.Value = Math.Clamp(noise.TrajectoryJitterPx, (int)_trajectoryNoiseBox.Minimum, (int)_trajectoryNoiseBox.Maximum);
+    }
+
+    private void WireNoiseSettingChanges()
+    {
+        _coordNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
+        _timeNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
+        _accelNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
+        _trajectoryNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
+    }
+
+    private void NoiseSettingOnValueChanged(object? sender, EventArgs e)
+    {
+        if (_updatingSelection)
+        {
+            return;
+        }
+
+        var macro = GetSelectedMacro();
+        if (macro is null)
+        {
+            return;
+        }
+
+        macro.Noise = GetNoiseSettings();
+        AutoSaveMacros();
     }
 
     private Macro? GetSelectedMacro()
