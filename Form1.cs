@@ -7,6 +7,7 @@ public partial class Form1 : Form
     private readonly HotkeyManager _hotkeys = new();
     private readonly List<Macro> _macros = new();
     private readonly EmergencyStopOverlay _emergencyOverlay = new();
+    private readonly CountdownSoundPlayer _countdownSound = new();
     private readonly ToolTip _toolTip = new()
     {
         AutoPopDelay = 12000,
@@ -23,6 +24,7 @@ public partial class Form1 : Form
     private Button _saveButton = null!;
     private Button _loadButton = null!;
     private Button _previewButton = null!;
+    private CheckBox _showPlaybackTraceBox = null!;
     private ListView _macroList = null!;
     private Label _summaryLabel = null!;
     private TextBox _nameBox = null!;
@@ -133,6 +135,13 @@ public partial class Form1 : Form
         _saveButton = CreateButton("出力", SaveButtonOnClick);
         _loadButton = CreateButton("読込", LoadButtonOnClick);
         _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
+        _showPlaybackTraceBox = new CheckBox
+        {
+            Text = "再生軌道",
+            AutoSize = true,
+            Checked = true,
+            Margin = new Padding(0, 4, 10, 0)
+        };
         topPanel.Controls.AddRange(new Control[]
         {
             _recordButton,
@@ -142,7 +151,8 @@ public partial class Form1 : Form
             _deleteButton,
             _saveButton,
             _loadButton,
-            _previewButton
+            _previewButton,
+            _showPlaybackTraceBox
         });
 
         _mainSplit = new SplitContainer
@@ -395,6 +405,7 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_trajectoryNoiseBox, "クリック以外のマウス軌道に加える曲がり具合です。大きいほど毎回違う軌道になります。");
         _toolTip.SetToolTip(_accelNoiseBox, "マウス移動中の加速・減速の偏りです。人間らしい速度変化を作ります。");
         _toolTip.SetToolTip(_previewPathCountBox, "プレビューで表示するノイズ入り軌道の本数です。多いほど揺れ幅を確認できますが画面は混みます。");
+        _toolTip.SetToolTip(_showPlaybackTraceBox, "再生中に、実際に送信したノイズ込みのマウス軌道を画面上へ表示します。");
     }
 
     private void RecordButtonOnClick(object? sender, EventArgs e)
@@ -419,9 +430,11 @@ public partial class Form1 : Form
             for (var remaining = countdown; remaining > 0; remaining--)
             {
                 SetStatus($"記録開始まで {remaining} 秒。");
+                _countdownSound.PlayTick();
                 await Task.Delay(1000, token);
             }
 
+            _countdownSound.PlayStart();
             StartRecording();
         }
         catch (OperationCanceledException)
@@ -661,8 +674,30 @@ public partial class Form1 : Form
 
         UpdateButtons();
         var noise = GetNoiseSettings(macro);
-        await _player.PlayAsync(macro, noise, (int)_playbackSpeedBox.Value, Screen.FromControl(this), SetStatus);
-        UpdateButtons();
+        PlaybackTraceOverlayForm? traceOverlay = null;
+        try
+        {
+            if (_showPlaybackTraceBox.Checked)
+            {
+                traceOverlay = new PlaybackTraceOverlayForm();
+                traceOverlay.Start();
+            }
+
+            Action<Point>? tracePoint = traceOverlay is null ? null : traceOverlay.AddPoint;
+            await _player.PlayAsync(
+                macro,
+                noise,
+                (int)_playbackSpeedBox.Value,
+                Screen.FromControl(this),
+                tracePoint,
+                SetStatus);
+        }
+        finally
+        {
+            traceOverlay?.Close();
+            traceOverlay?.Dispose();
+            UpdateButtons();
+        }
     }
 
     private void MacroListOnSelectedIndexChanged(object? sender, EventArgs e)

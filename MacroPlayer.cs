@@ -23,6 +23,7 @@ public sealed class MacroPlayer : IDisposable
         NoiseSettings noise,
         int speedPercent,
         Screen? playbackScreen = null,
+        Action<Point>? tracePoint = null,
         Action<string>? status = null)
     {
         if (IsPlaying || macro.Events.Count == 0)
@@ -40,7 +41,7 @@ public sealed class MacroPlayer : IDisposable
         {
             RaiseTimerResolution();
             var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs);
-            await Task.Run(() => RunTimeline(timeline, token), token);
+            await Task.Run(() => RunTimeline(timeline, token, tracePoint), token);
         }
         catch (OperationCanceledException)
         {
@@ -586,7 +587,7 @@ public sealed class MacroPlayer : IDisposable
         return hertz is >= 30 and <= 1000 ? hertz : null;
     }
 
-    private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token)
+    private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token, Action<Point>? tracePoint)
     {
         var stopwatch = Stopwatch.StartNew();
         for (var i = 0; i < timeline.Count; i++)
@@ -599,7 +600,7 @@ public sealed class MacroPlayer : IDisposable
             }
 
             WaitUntil(stopwatch, action.TimeMs, token);
-            Execute(action);
+            Execute(action, tracePoint);
         }
     }
 
@@ -667,29 +668,34 @@ public sealed class MacroPlayer : IDisposable
     [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", ExactSpelling = true)]
     private static extern uint TimeEndPeriodNative(uint periodMs);
 
-    private static void Execute(PlaybackAction action)
+    private static void Execute(PlaybackAction action, Action<Point>? tracePoint)
     {
         switch (action.Kind)
         {
             case PlaybackActionKind.MouseMove:
                 MoveMouseExact(action.Point.X, action.Point.Y);
+                tracePoint?.Invoke(action.Point);
                 break;
             case PlaybackActionKind.MouseDown:
                 MoveMouseExact(action.Point.X, action.Point.Y);
+                tracePoint?.Invoke(action.Point);
                 SendMouseButton(action.Button, true);
                 break;
             case PlaybackActionKind.MouseUp:
                 MoveMouseExact(action.Point.X, action.Point.Y);
+                tracePoint?.Invoke(action.Point);
                 SendMouseButton(action.Button, false);
                 break;
             case PlaybackActionKind.MouseWheel:
                 MoveMouseExact(action.Point.X, action.Point.Y);
+                tracePoint?.Invoke(action.Point);
                 SendMouseWheel(action.WheelDelta);
                 break;
             case PlaybackActionKind.KeyDown:
                 if (action.Point is { X: not 0 } or { Y: not 0 })
                 {
                     MoveMouseExact(action.Point.X, action.Point.Y);
+                    tracePoint?.Invoke(action.Point);
                 }
 
                 SendKey(action.KeyCode, true);
@@ -698,6 +704,7 @@ public sealed class MacroPlayer : IDisposable
                 if (action.Point is { X: not 0 } or { Y: not 0 })
                 {
                     MoveMouseExact(action.Point.X, action.Point.Y);
+                    tracePoint?.Invoke(action.Point);
                 }
 
                 SendKey(action.KeyCode, false);
