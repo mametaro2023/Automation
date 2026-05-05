@@ -28,8 +28,12 @@ public partial class Form1 : Form
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
+    private ComboBox _recordingModeBox = null!;
     private ComboBox _densityBox = null!;
+    private NumericUpDown _eventIntervalBox = null!;
+    private NumericUpDown _holdDurationBox = null!;
     private NumericUpDown _countdownBox = null!;
+    private Label _timeNoiseLabel = null!;
     private NumericUpDown _coordNoiseBox = null!;
     private NumericUpDown _timeNoiseBox = null!;
     private NumericUpDown _accelNoiseBox = null!;
@@ -185,7 +189,7 @@ public partial class Form1 : Form
         };
         settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 290));
         settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
         settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
         _rightSplit.Panel1.Controls.Add(settingsPanel);
 
@@ -208,26 +212,50 @@ public partial class Form1 : Form
 
         var recordGroup = CreateGroup("記録");
         settingsPanel.Controls.Add(recordGroup, 1, 0);
+        _recordingModeBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _recordingModeBox.Items.AddRange(new object[] { "完全記録", "イベント間隔一定" });
+        _recordingModeBox.SelectedIndex = 0;
+        _recordingModeBox.SelectedIndexChanged += (_, _) => RecordingModeOnChanged();
+        AddLabeledControl(recordGroup, "記録方法", _recordingModeBox, 20, 118);
         _densityBox = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         _densityBox.Items.AddRange(new object[] { "軽量", "標準", "高精度" });
         _densityBox.SelectedIndex = 1;
-        AddLabeledControl(recordGroup, "密度", _densityBox, 22, 95);
+        AddLabeledControl(recordGroup, "密度", _densityBox, 48, 118);
+        AddLabeledControl(recordGroup, "イベント間隔(ms)", _eventIntervalBox = new NumericUpDown
+        {
+            Minimum = 10,
+            Maximum = 600000,
+            Increment = 10,
+            Value = 200,
+            ThousandsSeparator = true
+        }, 76, 118);
+        AddLabeledControl(recordGroup, "押下時間(ms)", _holdDurationBox = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 600000,
+            Increment = 10,
+            Value = 60,
+            ThousandsSeparator = true
+        }, 104, 118);
         AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 60,
             Value = 3
-        }, 54, 95);
+        }, 132, 118);
         AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
         {
             Minimum = 10,
             Maximum = 500,
             Increment = 10,
             Value = 100
-        }, 86, 95);
+        }, 160, 118);
 
         var noiseGroup = CreateGroup("ノイズ");
         settingsPanel.Controls.Add(noiseGroup, 1, 1);
@@ -237,7 +265,7 @@ public partial class Form1 : Form
             Maximum = 20,
             Value = 2
         }, 18, 118);
-        AddLabeledControl(noiseGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
+        _timeNoiseLabel = AddLabeledControl(noiseGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
@@ -273,6 +301,7 @@ public partial class Form1 : Form
         _rightSplit.Panel2.Controls.Add(_summaryLabel);
 
         ConfigureParameterTooltips();
+        RecordingModeOnChanged();
 
         _statusLabel = new ToolStripStatusLabel("待機中。");
         var statusStrip = new StatusStrip
@@ -301,8 +330,8 @@ public partial class Form1 : Form
 
         if (_rightSplit is not null && _rightSplit.Height > 0)
         {
-            const int desiredTop = 360;
-            const int desiredTopMin = 350;
+            const int desiredTop = 410;
+            const int desiredTopMin = 386;
             const int desiredBottomMin = 160;
             var maxDistance = _rightSplit.Height - desiredBottomMin - _rightSplit.SplitterWidth;
             if (maxDistance >= desiredTopMin)
@@ -334,18 +363,20 @@ public partial class Form1 : Form
         };
     }
 
-    private static void AddLabeledControl(Control parent, string labelText, Control control, int y, int labelWidth)
+    private static Label AddLabeledControl(Control parent, string labelText, Control control, int y, int labelWidth)
     {
-        parent.Controls.Add(new Label
+        var label = new Label
         {
             Text = labelText,
             Location = new Point(12, y + 4),
             Size = new Size(labelWidth, 20)
-        });
+        };
+        parent.Controls.Add(label);
         control.Location = new Point(18 + labelWidth, y);
         control.Size = new Size(Math.Max(80, parent.Width - labelWidth - 36), 23);
         control.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         parent.Controls.Add(control);
+        return label;
     }
 
     private void ConfigureParameterTooltips()
@@ -353,7 +384,10 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
         _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
         _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
+        _toolTip.SetToolTip(_recordingModeBox, "完全記録は操作時刻をそのまま残します。イベント間隔一定はクリックやキー入力の間隔を指定msへ整えます。");
         _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は記録/再生60Hz、標準は記録200Hz/再生は画面Hz、高精度は記録/再生1000Hzです。");
+        _toolTip.SetToolTip(_eventIntervalBox, "イベント間隔一定で使う基準間隔です。押下/解放ペア以外の次イベントまでの時間になります。");
+        _toolTip.SetToolTip(_holdDurationBox, "イベント間隔一定で使う押下から解放までの時間です。クリックやキー押下の長さを決めます。");
         _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
         _toolTip.SetToolTip(_playbackSpeedBox, "再生全体の速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
         _toolTip.SetToolTip(_coordNoiseBox, "クリック押下/解放の座標に加える小さな揺れです。重要点なので大きくしすぎないでください。");
@@ -551,13 +585,20 @@ public partial class Form1 : Form
             RemoveTrailingToolWindowMouseEvents(events);
             if (events.Count > 0)
             {
+                var options = GetRecordingOptions();
+                var noise = GetNoiseSettings();
+                if (options.TimingMode == RecordingTimingMode.FixedEventInterval)
+                {
+                    events = MacroTimingNormalizer.NormalizeFixedEventIntervals(events, options);
+                }
+
                 var macro = new Macro
                 {
                     Name = string.IsNullOrWhiteSpace(_nameBox.Text)
                         ? $"マクロ {DateTime.Now:yyyyMMdd HHmmss}"
                         : _nameBox.Text.Trim(),
-                    Recording = GetRecordingOptions(),
-                    Noise = GetNoiseSettings(),
+                    Recording = options,
+                    Noise = noise,
                     Events = events
                 };
                 _macros.Add(macro);
@@ -630,6 +671,7 @@ public partial class Form1 : Form
         _updatingSelection = true;
         _nameBox.Text = macro?.Name ?? "";
         _hotkeyBox.Text = macro?.Hotkey.ToString() ?? "";
+        SetRecordingControls(macro?.Recording ?? RecordingOptions.Standard());
         SetNoiseControls(macro?.Noise ?? new NoiseSettings());
         _updatingSelection = false;
         RefreshSummary(macro);
@@ -752,6 +794,11 @@ public partial class Form1 : Form
             2 => RecordingOptions.HighPrecision(),
             _ => RecordingOptions.Standard()
         };
+        options.TimingMode = _recordingModeBox.SelectedIndex == 1
+            ? RecordingTimingMode.FixedEventInterval
+            : RecordingTimingMode.Complete;
+        options.EventIntervalMs = (int)_eventIntervalBox.Value;
+        options.HoldDurationMs = (int)Math.Min(_holdDurationBox.Value, _eventIntervalBox.Value);
         return options;
     }
 
@@ -760,7 +807,8 @@ public partial class Form1 : Form
         return macro?.Noise ?? new NoiseSettings
         {
             CoordinateJitterPx = (int)_coordNoiseBox.Value,
-            TimeJitterPercent = (int)_timeNoiseBox.Value,
+            TimeJitterPercent = _recordingModeBox.SelectedIndex == 1 ? 0 : (int)_timeNoiseBox.Value,
+            TimeJitterMs = _recordingModeBox.SelectedIndex == 1 ? (int)_timeNoiseBox.Value : 20,
             AccelerationJitterPercent = (int)_accelNoiseBox.Value,
             TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
         };
@@ -769,9 +817,42 @@ public partial class Form1 : Form
     private void SetNoiseControls(NoiseSettings noise)
     {
         _coordNoiseBox.Value = Math.Clamp(noise.CoordinateJitterPx, (int)_coordNoiseBox.Minimum, (int)_coordNoiseBox.Maximum);
-        _timeNoiseBox.Value = Math.Clamp(noise.TimeJitterPercent, (int)_timeNoiseBox.Minimum, (int)_timeNoiseBox.Maximum);
+        var macro = GetSelectedMacro();
+        var timeValue = macro?.Recording?.TimingMode == RecordingTimingMode.FixedEventInterval
+            ? noise.TimeJitterMs
+            : noise.TimeJitterPercent;
+        _timeNoiseBox.Value = Math.Clamp(timeValue, (int)_timeNoiseBox.Minimum, (int)_timeNoiseBox.Maximum);
         _accelNoiseBox.Value = Math.Clamp(noise.AccelerationJitterPercent, (int)_accelNoiseBox.Minimum, (int)_accelNoiseBox.Maximum);
         _trajectoryNoiseBox.Value = Math.Clamp(noise.TrajectoryJitterPx, (int)_trajectoryNoiseBox.Minimum, (int)_trajectoryNoiseBox.Maximum);
+    }
+
+    private void SetRecordingControls(RecordingOptions recording)
+    {
+        _recordingModeBox.SelectedIndex = recording.TimingMode == RecordingTimingMode.FixedEventInterval ? 1 : 0;
+        _densityBox.SelectedIndex = recording.MousePollingRateHz switch
+        {
+            <= 60 => 0,
+            >= 1000 => 2,
+            _ => 1
+        };
+        _eventIntervalBox.Value = Math.Clamp(recording.EventIntervalMs, (int)_eventIntervalBox.Minimum, (int)_eventIntervalBox.Maximum);
+        _holdDurationBox.Value = Math.Clamp(recording.HoldDurationMs, (int)_holdDurationBox.Minimum, (int)_holdDurationBox.Maximum);
+    }
+
+    private void RecordingModeOnChanged()
+    {
+        var fixedIntervalMode = _recordingModeBox.SelectedIndex == 1;
+        _eventIntervalBox.Enabled = fixedIntervalMode;
+        _holdDurationBox.Enabled = fixedIntervalMode;
+        _timeNoiseLabel.Text = fixedIntervalMode ? "時間(ms)" : "時間(%)";
+        _timeNoiseBox.Maximum = fixedIntervalMode ? 500 : 50;
+        _timeNoiseBox.Increment = fixedIntervalMode ? 5 : 1;
+        _timeNoiseBox.Value = fixedIntervalMode
+            ? Math.Clamp(_timeNoiseBox.Value == 5 ? 20 : _timeNoiseBox.Value, _timeNoiseBox.Minimum, _timeNoiseBox.Maximum)
+            : Math.Clamp(_timeNoiseBox.Value > 50 ? 5 : _timeNoiseBox.Value, _timeNoiseBox.Minimum, _timeNoiseBox.Maximum);
+        _toolTip.SetToolTip(_timeNoiseBox, fixedIntervalMode
+            ? "イベント間隔一定で使う時間揺れです。指定間隔に対して±msで変動します。"
+            : "クリックやキー入力の間隔に加える時間揺れです。機械的な一定間隔を避けます。");
     }
 
     private void WireNoiseSettingChanges()
@@ -845,9 +926,17 @@ public partial class Form1 : Form
         _summaryLabel.Text =
             $"名前: {macro.Name}\r\n" +
             $"イベント数: {macro.Events.Count}\r\n" +
-            $"時間: {macro.DurationMs} ms\r\n\r\n" +
+            $"時間: {macro.DurationMs} ms\r\n" +
+            $"記録方法: {GetRecordingModeText(macro.Recording)}\r\n\r\n" +
             "記録データの詳細は表示しません。\r\n" +
             "プレビューでは赤=完全再現、黄=ノイズ入りを描画します。";
+    }
+
+    private static string GetRecordingModeText(RecordingOptions recording)
+    {
+        return recording.TimingMode == RecordingTimingMode.FixedEventInterval
+            ? $"イベント間隔一定 / {recording.EventIntervalMs} ms / 押下 {recording.HoldDurationMs} ms"
+            : "完全記録";
     }
 
     private void RefreshHotkeys()

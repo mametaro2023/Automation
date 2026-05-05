@@ -148,7 +148,14 @@ public sealed class MacroPlayer : IDisposable
     private List<TimedMacroEvent> BuildTimedEvents(Macro macro, NoiseSettings noise, int speedPercent)
     {
         var speed = Math.Clamp(speedPercent, 10, 500) / 100.0;
-        var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
+        var fixedIntervalMode = macro.Recording?.TimingMode == RecordingTimingMode.FixedEventInterval;
+        var events = fixedIntervalMode
+            ? MacroTimingNormalizer.NormalizeFixedEventIntervals(
+                macro.Events,
+                macro.Recording ?? RecordingOptions.Standard(),
+                noise.TimeJitterMs,
+                _random)
+            : macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
         var timedEvents = new List<TimedMacroEvent>(events.Count);
         long previousOriginalMs = 0;
         double playbackTimeMs = 0;
@@ -157,7 +164,7 @@ public sealed class MacroPlayer : IDisposable
         {
             var delay = macroEvent.TimeOffsetMs - previousOriginalMs;
             previousOriginalMs = macroEvent.TimeOffsetMs;
-            playbackTimeMs += ApplyTimeJitter(delay, noise.TimeJitterPercent) / speed;
+            playbackTimeMs += (fixedIntervalMode ? delay : ApplyTimeJitter(delay, noise.TimeJitterPercent)) / speed;
             timedEvents.Add(new TimedMacroEvent(playbackTimeMs, macroEvent));
         }
 

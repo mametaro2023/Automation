@@ -23,6 +23,12 @@ public enum RecordedMouseButton
     XButton2
 }
 
+public enum RecordingTimingMode
+{
+    Complete,
+    FixedEventInterval
+}
+
 public sealed class MacroEvent
 {
     public MacroEventKind Kind { get; set; }
@@ -81,6 +87,9 @@ public sealed class RecordingOptions
     public int MousePollingRateHz { get; set; } = 200;
     public int MoveMinDistancePx { get; set; } = 2;
     public int DragMoveMinDistancePx { get; set; } = 1;
+    public RecordingTimingMode TimingMode { get; set; } = RecordingTimingMode.Complete;
+    public int EventIntervalMs { get; set; } = 200;
+    public int HoldDurationMs { get; set; } = 60;
 
     public static RecordingOptions Lightweight() => new()
     {
@@ -105,6 +114,7 @@ public sealed class NoiseSettings
 {
     public int CoordinateJitterPx { get; set; } = 2;
     public int TimeJitterPercent { get; set; } = 5;
+    public int TimeJitterMs { get; set; } = 20;
     public int AccelerationJitterPercent { get; set; } = 12;
     public int TrajectoryJitterPx { get; set; } = 16;
 }
