@@ -67,6 +67,7 @@ public sealed class MacroPlayer : IDisposable
         var currentTimeMs = 0.0;
         var pressedPositions = new Dictionary<RecordedMouseButton, Point>();
         var movedWhilePressed = new HashSet<RecordedMouseButton>();
+        var plannedEventPoints = new Dictionary<MacroEvent, Point>();
 
         for (var i = 0; i < timedEvents.Count; i++)
         {
@@ -84,7 +85,26 @@ public sealed class MacroPlayer : IDisposable
 
                 i--;
                 var stationaryRun = IsStationaryRun(run, currentRecordedPosition);
-                currentPosition = AddMouseRun(actions, currentPosition, currentTimeMs, run, noise, pressedPositions.Count > 0, frameIntervalMs, stationaryRun);
+                var nextEvent = i + 1 < timedEvents.Count ? timedEvents[i + 1].Event : null;
+                var plannedEndPoint = PlanNextEventPoint(
+                    nextEvent,
+                    run[^1].Event,
+                    currentPosition,
+                    stationaryRun,
+                    pressedPositions,
+                    movedWhilePressed,
+                    noise,
+                    plannedEventPoints);
+                currentPosition = AddMouseRun(
+                    actions,
+                    currentPosition,
+                    currentTimeMs,
+                    run,
+                    noise,
+                    pressedPositions.Count > 0,
+                    frameIntervalMs,
+                    stationaryRun,
+                    plannedEndPoint);
                 currentRecordedPosition = new Point(run[^1].Event.X, run[^1].Event.Y);
                 currentTimeMs = run[^1].TimeMs;
 
@@ -103,7 +123,7 @@ public sealed class MacroPlayer : IDisposable
             switch (macroEvent.Kind)
             {
                 case MacroEventKind.MouseDown:
-                    var downPoint = CreateClickPoint(macroEvent, noise);
+                    var downPoint = GetEventPoint(macroEvent, noise, plannedEventPoints);
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, downPoint, macroEvent.Button, true));
                     currentPosition = downPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
@@ -119,7 +139,7 @@ public sealed class MacroPlayer : IDisposable
                     }
                     else
                     {
-                        upPoint = CreateClickPoint(macroEvent, noise);
+                        upPoint = GetEventPoint(macroEvent, noise, plannedEventPoints);
                     }
 
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, upPoint, macroEvent.Button, false));
@@ -188,7 +208,8 @@ public sealed class MacroPlayer : IDisposable
         NoiseSettings noise,
         bool isDragging,
         double frameIntervalMs,
-        bool stationaryRun)
+        bool stationaryRun,
+        Point? endPointOverride)
     {
         if (run.Count == 0)
         {
@@ -205,6 +226,10 @@ public sealed class MacroPlayer : IDisposable
             new(startTimeMs, startPosition)
         };
         samples.AddRange(run.Select(item => new TimedPoint(item.TimeMs, new Point(item.Event.X, item.Event.Y))));
+        if (endPointOverride is not null)
+        {
+            samples[^1] = samples[^1] with { Point = endPointOverride.Value };
+        }
 
         var endTimeMs = samples[^1].TimeMs;
         if (endTimeMs <= startTimeMs)
@@ -228,6 +253,47 @@ public sealed class MacroPlayer : IDisposable
     {
         var first = previousRecordedPosition;
         return run.All(item => item.Event.X == first.X && item.Event.Y == first.Y);
+    }
+
+    private Point? PlanNextEventPoint(
+        MacroEvent? nextEvent,
+        MacroEvent lastRunEvent,
+        Point currentPosition,
+        bool stationaryRun,
+        IReadOnlyDictionary<RecordedMouseButton, Point> pressedPositions,
+        IReadOnlySet<RecordedMouseButton> movedWhilePressed,
+        NoiseSettings noise,
+        Dictionary<MacroEvent, Point> plannedEventPoints)
+    {
+        if (nextEvent is null
+            || nextEvent.X != lastRunEvent.X
+            || nextEvent.Y != lastRunEvent.Y)
+        {
+            return null;
+        }
+
+        if (nextEvent.Kind == MacroEventKind.MouseDown)
+        {
+            var point = stationaryRun ? currentPosition : CreateClickPoint(nextEvent, noise);
+            plannedEventPoints[nextEvent] = point;
+            return point;
+        }
+
+        if (nextEvent.Kind == MacroEventKind.MouseUp)
+        {
+            if (pressedPositions.TryGetValue(nextEvent.Button, out var downPosition)
+                && (stationaryRun || !movedWhilePressed.Contains(nextEvent.Button)))
+            {
+                plannedEventPoints[nextEvent] = downPosition;
+                return downPosition;
+            }
+
+            var point = CreateClickPoint(nextEvent, noise);
+            plannedEventPoints[nextEvent] = point;
+            return point;
+        }
+
+        return null;
     }
 
     private static void AddMouseMoveAction(List<PlaybackAction> actions, double timeMs, Point point)
@@ -338,6 +404,16 @@ public sealed class MacroPlayer : IDisposable
     private static double SmoothStep(double t)
     {
         return t * t * (3.0 - 2.0 * t);
+    }
+
+    private Point GetEventPoint(MacroEvent macroEvent, NoiseSettings noise, Dictionary<MacroEvent, Point> plannedEventPoints)
+    {
+        if (plannedEventPoints.Remove(macroEvent, out var point))
+        {
+            return point;
+        }
+
+        return CreateClickPoint(macroEvent, noise);
     }
 
     private Point CreateClickPoint(MacroEvent macroEvent, NoiseSettings noise)

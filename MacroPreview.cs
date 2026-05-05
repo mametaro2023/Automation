@@ -84,6 +84,8 @@ public static class MacroPreviewBuilder
         var recordedAnchor = Point.Empty;
         var hasRecordedAnchor = false;
         var segment = new List<MacroEvent>();
+        var pressedPositions = new Dictionary<RecordedMouseButton, Point>();
+        var movedWhilePressed = new HashSet<RecordedMouseButton>();
 
         foreach (var macroEvent in events)
         {
@@ -93,12 +95,20 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, recordedAnchor, hasRecordedAnchor, noise, random);
+            var stationarySegment = FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, recordedAnchor, hasRecordedAnchor, noise, random);
+            if (segment.Count > 0 && !stationarySegment)
+            {
+                foreach (var button in pressedPositions.Keys)
+                {
+                    movedWhilePressed.Add(button);
+                }
+            }
+
             segment.Clear();
 
             if (TryGetPoint(macroEvent, out var point))
             {
-                var noisyPoint = CreateNoisyAnchor(point, macroEvent, noise, random);
+                var noisyPoint = CreateNoisyEventPoint(macroEvent, point, anchor, hasAnchor && stationarySegment, pressedPositions, movedWhilePressed, noise, random);
                 noisyMarkers.Add(CreateMarker(noisyPoint, macroEvent));
                 noisyPath.Add(noisyPoint);
                 noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPoint));
@@ -115,7 +125,7 @@ public static class MacroPreviewBuilder
         preview.NoisyMarkers.Add(noisyMarkers);
     }
 
-    private static void FlushMoveSegment(
+    private static bool FlushMoveSegment(
         List<Point> noisyPath,
         List<TimedPreviewPoint> noisyTimedPath,
         List<MacroEvent> segment,
@@ -128,7 +138,7 @@ public static class MacroPreviewBuilder
     {
         if (segment.Count == 0)
         {
-            return;
+            return true;
         }
 
         if (hasAnchor && hasRecordedAnchor && IsStationarySegment(segment, recordedAnchor))
@@ -139,7 +149,7 @@ public static class MacroPreviewBuilder
                 noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, anchor));
             }
 
-            return;
+            return true;
         }
 
         var start = hasAnchor ? anchor : new Point(segment[0].X, segment[0].Y);
@@ -166,6 +176,8 @@ public static class MacroPreviewBuilder
                 (int)Math.Round(macroEvent.Y + normalY * sideOffset)));
             noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPath[^1]));
         }
+
+        return false;
     }
 
     private static bool IsStationarySegment(IReadOnlyList<MacroEvent> segment, Point recordedAnchor)
@@ -182,6 +194,43 @@ public static class MacroPreviewBuilder
 
         var sign = random.Next(0, 2) == 0 ? -1.0 : 1.0;
         return sign * (minMagnitude + random.NextDouble() * Math.Max(0.0, maxMagnitude - minMagnitude));
+    }
+
+    private static Point CreateNoisyEventPoint(
+        MacroEvent macroEvent,
+        Point recordedPoint,
+        Point stationaryAnchor,
+        bool useStationaryAnchor,
+        Dictionary<RecordedMouseButton, Point> pressedPositions,
+        HashSet<RecordedMouseButton> movedWhilePressed,
+        NoiseSettings noise,
+        Random random)
+    {
+        if (macroEvent.Kind == MacroEventKind.MouseDown)
+        {
+            var point = useStationaryAnchor ? stationaryAnchor : CreateNoisyAnchor(recordedPoint, macroEvent, noise, random);
+            pressedPositions[macroEvent.Button] = point;
+            movedWhilePressed.Remove(macroEvent.Button);
+            return point;
+        }
+
+        if (macroEvent.Kind == MacroEventKind.MouseUp)
+        {
+            if (pressedPositions.TryGetValue(macroEvent.Button, out var downPoint)
+                && !movedWhilePressed.Contains(macroEvent.Button))
+            {
+                pressedPositions.Remove(macroEvent.Button);
+                movedWhilePressed.Remove(macroEvent.Button);
+                return downPoint;
+            }
+
+            var point = useStationaryAnchor ? stationaryAnchor : CreateNoisyAnchor(recordedPoint, macroEvent, noise, random);
+            pressedPositions.Remove(macroEvent.Button);
+            movedWhilePressed.Remove(macroEvent.Button);
+            return point;
+        }
+
+        return CreateNoisyAnchor(recordedPoint, macroEvent, noise, random);
     }
 
     private static bool TryGetPoint(MacroEvent macroEvent, out Point point)
