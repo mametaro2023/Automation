@@ -38,6 +38,10 @@ public sealed record PreviewInteractionSegment(
 
 public static class MacroPreviewBuilder
 {
+    private const int StationaryRadiusPx = 2;
+    private const long StationaryMinDurationMs = 10;
+    private const int StationaryMinSamples = 3;
+
     public static MacroPreview Build(Macro macro, NoiseSettings noise, int variantCount)
     {
         var preview = new MacroPreview();
@@ -95,8 +99,17 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            var stationarySegment = FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, recordedAnchor, hasRecordedAnchor, noise, random);
-            if (segment.Count > 0 && !stationarySegment)
+            var flushResult = FlushMoveSegment(
+                noisyPath,
+                noisyTimedPath,
+                segment,
+                ref anchor,
+                ref hasAnchor,
+                ref recordedAnchor,
+                ref hasRecordedAnchor,
+                noise,
+                random);
+            if (flushResult.HadMovement)
             {
                 foreach (var button in pressedPositions.Keys)
                 {
@@ -108,7 +121,7 @@ public static class MacroPreviewBuilder
 
             if (TryGetPoint(macroEvent, out var point))
             {
-                var noisyPoint = CreateNoisyEventPoint(macroEvent, point, anchor, hasAnchor && stationarySegment, pressedPositions, movedWhilePressed, noise, random);
+                var noisyPoint = CreateNoisyEventPoint(macroEvent, point, anchor, hasAnchor && flushResult.TrailingStationary, pressedPositions, movedWhilePressed, noise, random);
                 noisyMarkers.Add(CreateMarker(noisyPoint, macroEvent));
                 noisyPath.Add(noisyPoint);
                 noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPoint));
@@ -119,39 +132,78 @@ public static class MacroPreviewBuilder
             }
         }
 
-        FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, recordedAnchor, hasRecordedAnchor, noise, random);
+        FlushMoveSegment(
+            noisyPath,
+            noisyTimedPath,
+            segment,
+            ref anchor,
+            ref hasAnchor,
+            ref recordedAnchor,
+            ref hasRecordedAnchor,
+            noise,
+            random);
         preview.NoisyPaths.Add(noisyPath);
         preview.NoisyTimedPaths.Add(noisyTimedPath);
         preview.NoisyMarkers.Add(noisyMarkers);
     }
 
-    private static bool FlushMoveSegment(
+    private static FlushMoveResult FlushMoveSegment(
         List<Point> noisyPath,
         List<TimedPreviewPoint> noisyTimedPath,
         List<MacroEvent> segment,
-        Point anchor,
-        bool hasAnchor,
-        Point recordedAnchor,
-        bool hasRecordedAnchor,
+        ref Point anchor,
+        ref bool hasAnchor,
+        ref Point recordedAnchor,
+        ref bool hasRecordedAnchor,
         NoiseSettings noise,
         Random random)
     {
         if (segment.Count == 0)
         {
-            return true;
+            return new FlushMoveResult(true, false);
         }
 
-        if (hasAnchor && hasRecordedAnchor && IsStationarySegment(segment, recordedAnchor))
+        var moveSegments = SplitMoveSegment(segment, hasRecordedAnchor ? recordedAnchor : new Point(segment[0].X, segment[0].Y));
+        var trailingStationary = false;
+        var hadMovement = false;
+        foreach (var moveSegment in moveSegments)
         {
-            foreach (var macroEvent in segment)
+            if (moveSegment.IsStationary)
             {
-                noisyPath.Add(anchor);
-                noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, anchor));
+                var holdPoint = hasAnchor ? anchor : new Point(moveSegment.Events[0].X, moveSegment.Events[0].Y);
+                foreach (var macroEvent in moveSegment.Events)
+                {
+                    noisyPath.Add(holdPoint);
+                    noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, holdPoint));
+                }
+
+                anchor = holdPoint;
+                hasAnchor = true;
+                recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
+                hasRecordedAnchor = true;
+                trailingStationary = true;
+                continue;
             }
 
-            return true;
+            DrawMovingSegment(noisyPath, noisyTimedPath, moveSegment.Events, ref anchor, ref hasAnchor, noise, random);
+            recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
+            hasRecordedAnchor = true;
+            trailingStationary = false;
+            hadMovement = true;
         }
 
+        return new FlushMoveResult(trailingStationary, hadMovement);
+    }
+
+    private static void DrawMovingSegment(
+        List<Point> noisyPath,
+        List<TimedPreviewPoint> noisyTimedPath,
+        List<MacroEvent> segment,
+        ref Point anchor,
+        ref bool hasAnchor,
+        NoiseSettings noise,
+        Random random)
+    {
         var start = hasAnchor ? anchor : new Point(segment[0].X, segment[0].Y);
         var end = new Point(segment[^1].X, segment[^1].Y);
         var dx = end.X - start.X;
@@ -177,12 +229,85 @@ public static class MacroPreviewBuilder
             noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPath[^1]));
         }
 
-        return false;
+        if (noisyPath.Count > 0)
+        {
+            anchor = noisyPath[^1];
+            hasAnchor = true;
+        }
     }
 
-    private static bool IsStationarySegment(IReadOnlyList<MacroEvent> segment, Point recordedAnchor)
+    private static List<PreviewMoveSegment> SplitMoveSegment(IReadOnlyList<MacroEvent> segment, Point previousRecordedPosition)
     {
-        return segment.All(item => item.X == recordedAnchor.X && item.Y == recordedAnchor.Y);
+        var segments = new List<PreviewMoveSegment>();
+        var index = 0;
+        var anchor = previousRecordedPosition;
+        while (index < segment.Count)
+        {
+            if (TryFindStationarySpan(segment, index, anchor, out var stationaryEnd))
+            {
+                segments.Add(new PreviewMoveSegment(true, segment.Skip(index).Take(stationaryEnd - index + 1).ToList()));
+                anchor = new Point(segment[stationaryEnd].X, segment[stationaryEnd].Y);
+                index = stationaryEnd + 1;
+                continue;
+            }
+
+            var movingStart = index;
+            index++;
+            while (index < segment.Count
+                && !TryFindStationarySpan(
+                    segment,
+                    index,
+                    new Point(segment[index - 1].X, segment[index - 1].Y),
+                    out _))
+            {
+                index++;
+            }
+
+            segments.Add(new PreviewMoveSegment(false, segment.Skip(movingStart).Take(index - movingStart).ToList()));
+            anchor = new Point(segment[index - 1].X, segment[index - 1].Y);
+        }
+
+        return segments;
+    }
+
+    private static bool TryFindStationarySpan(
+        IReadOnlyList<MacroEvent> segment,
+        int startIndex,
+        Point anchor,
+        out int endIndex)
+    {
+        endIndex = startIndex - 1;
+        var startPoint = new Point(segment[startIndex].X, segment[startIndex].Y);
+        var stationaryAnchor = DistanceSquared(startPoint, anchor) <= StationaryRadiusPx * StationaryRadiusPx
+            ? anchor
+            : startPoint;
+
+        for (var i = startIndex; i < segment.Count; i++)
+        {
+            var point = new Point(segment[i].X, segment[i].Y);
+            if (DistanceSquared(point, stationaryAnchor) > StationaryRadiusPx * StationaryRadiusPx)
+            {
+                break;
+            }
+
+            endIndex = i;
+        }
+
+        var count = endIndex - startIndex + 1;
+        if (count <= 0)
+        {
+            return false;
+        }
+
+        var durationMs = segment[endIndex].TimeOffsetMs - segment[startIndex].TimeOffsetMs;
+        return count >= StationaryMinSamples || durationMs >= StationaryMinDurationMs;
+    }
+
+    private static int DistanceSquared(Point a, Point b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return dx * dx + dy * dy;
     }
 
     private static double RandomSigned(Random random, double minMagnitude, double maxMagnitude)
@@ -369,6 +494,9 @@ public static class MacroPreviewBuilder
             _ => key.ToString()
         };
     }
+
+    private sealed record PreviewMoveSegment(bool IsStationary, List<MacroEvent> Events);
+    private sealed record FlushMoveResult(bool TrailingStationary, bool HadMovement);
 }
 
 public sealed class PreviewOverlayForm : Form

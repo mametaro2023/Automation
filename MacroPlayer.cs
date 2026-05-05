@@ -8,6 +8,9 @@ namespace AutomationTool;
 public sealed class MacroPlayer : IDisposable
 {
     private const int EndpointSnapDistancePx = 8;
+    private const int StationaryRadiusPx = 2;
+    private const double StationaryMinDurationMs = 10.0;
+    private const int StationaryMinSamples = 3;
 
     private readonly Random _random = new();
     private CancellationTokenSource? _cts;
@@ -84,35 +87,43 @@ public sealed class MacroPlayer : IDisposable
                 }
 
                 i--;
-                var stationaryRun = IsStationaryRun(run, currentRecordedPosition);
                 var nextEvent = i + 1 < timedEvents.Count ? timedEvents[i + 1].Event : null;
-                var plannedEndPoint = PlanNextEventPoint(
-                    nextEvent,
-                    run[^1].Event,
-                    currentPosition,
-                    stationaryRun,
-                    pressedPositions,
-                    movedWhilePressed,
-                    noise,
-                    plannedEventPoints);
-                currentPosition = AddMouseRun(
-                    actions,
-                    currentPosition,
-                    currentTimeMs,
-                    run,
-                    noise,
-                    pressedPositions.Count > 0,
-                    frameIntervalMs,
-                    stationaryRun,
-                    plannedEndPoint);
-                currentRecordedPosition = new Point(run[^1].Event.X, run[^1].Event.Y);
-                currentTimeMs = run[^1].TimeMs;
-
-                if (!stationaryRun)
+                var moveSegments = SplitMoveRun(run, currentRecordedPosition);
+                for (var segmentIndex = 0; segmentIndex < moveSegments.Count; segmentIndex++)
                 {
-                    foreach (var button in pressedPositions.Keys)
+                    var moveSegment = moveSegments[segmentIndex];
+                    var segmentEvents = moveSegment.Events;
+                    var isLastSegment = segmentIndex == moveSegments.Count - 1;
+                    var plannedEndPoint = isLastSegment
+                        ? PlanNextEventPoint(
+                            nextEvent,
+                            segmentEvents[^1].Event,
+                            currentPosition,
+                            moveSegment.IsStationary,
+                            pressedPositions,
+                            movedWhilePressed,
+                            noise,
+                            plannedEventPoints)
+                        : null;
+                    currentPosition = AddMouseRun(
+                        actions,
+                        currentPosition,
+                        currentTimeMs,
+                        segmentEvents,
+                        noise,
+                        pressedPositions.Count > 0,
+                        frameIntervalMs,
+                        moveSegment.IsStationary,
+                        plannedEndPoint);
+                    currentRecordedPosition = new Point(segmentEvents[^1].Event.X, segmentEvents[^1].Event.Y);
+                    currentTimeMs = segmentEvents[^1].TimeMs;
+
+                    if (!moveSegment.IsStationary)
                     {
-                        movedWhilePressed.Add(button);
+                        foreach (var button in pressedPositions.Keys)
+                        {
+                            movedWhilePressed.Add(button);
+                        }
                     }
                 }
 
@@ -157,10 +168,17 @@ public sealed class MacroPlayer : IDisposable
                 case MacroEventKind.KeyDown:
                 case MacroEventKind.KeyUp:
                     var keyPoint = GetKeySnapPoint(macroEvent, currentPosition);
+                    var recordedKeyPoint = macroEvent.X != 0 || macroEvent.Y != 0
+                        ? new Point(macroEvent.X, macroEvent.Y)
+                        : (Point?)null;
                     if (keyPoint is not null)
                     {
                         currentPosition = keyPoint.Value;
-                        currentRecordedPosition = keyPoint.Value;
+                    }
+
+                    if (recordedKeyPoint is not null)
+                    {
+                        currentRecordedPosition = recordedKeyPoint.Value;
                     }
 
                     actions.Add(PlaybackAction.Key(currentTimeMs, keyPoint, macroEvent.KeyCode, macroEvent.Kind == MacroEventKind.KeyDown));
@@ -249,10 +267,78 @@ public sealed class MacroPlayer : IDisposable
         return samples[^1].Point;
     }
 
-    private static bool IsStationaryRun(IReadOnlyList<TimedMacroEvent> run, Point previousRecordedPosition)
+    private static List<MoveRunSegment> SplitMoveRun(IReadOnlyList<TimedMacroEvent> run, Point previousRecordedPosition)
     {
-        var first = previousRecordedPosition;
-        return run.All(item => item.Event.X == first.X && item.Event.Y == first.Y);
+        var segments = new List<MoveRunSegment>();
+        var index = 0;
+        var anchor = previousRecordedPosition;
+        while (index < run.Count)
+        {
+            if (TryFindStationarySpan(run, index, anchor, out var stationaryEnd))
+            {
+                segments.Add(new MoveRunSegment(true, run.Skip(index).Take(stationaryEnd - index + 1).ToList()));
+                anchor = new Point(run[stationaryEnd].Event.X, run[stationaryEnd].Event.Y);
+                index = stationaryEnd + 1;
+                continue;
+            }
+
+            var movingStart = index;
+            index++;
+            while (index < run.Count
+                && !TryFindStationarySpan(
+                    run,
+                    index,
+                    new Point(run[index - 1].Event.X, run[index - 1].Event.Y),
+                    out _))
+            {
+                index++;
+            }
+
+            segments.Add(new MoveRunSegment(false, run.Skip(movingStart).Take(index - movingStart).ToList()));
+            anchor = new Point(run[index - 1].Event.X, run[index - 1].Event.Y);
+        }
+
+        return segments;
+    }
+
+    private static bool TryFindStationarySpan(
+        IReadOnlyList<TimedMacroEvent> run,
+        int startIndex,
+        Point anchor,
+        out int endIndex)
+    {
+        endIndex = startIndex - 1;
+        var startPoint = new Point(run[startIndex].Event.X, run[startIndex].Event.Y);
+        var stationaryAnchor = DistanceSquared(startPoint, anchor) <= StationaryRadiusPx * StationaryRadiusPx
+            ? anchor
+            : startPoint;
+
+        for (var i = startIndex; i < run.Count; i++)
+        {
+            var point = new Point(run[i].Event.X, run[i].Event.Y);
+            if (DistanceSquared(point, stationaryAnchor) > StationaryRadiusPx * StationaryRadiusPx)
+            {
+                break;
+            }
+
+            endIndex = i;
+        }
+
+        var count = endIndex - startIndex + 1;
+        if (count <= 0)
+        {
+            return false;
+        }
+
+        var durationMs = run[endIndex].TimeMs - run[startIndex].TimeMs;
+        return count >= StationaryMinSamples || durationMs >= StationaryMinDurationMs;
+    }
+
+    private static int DistanceSquared(Point a, Point b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return dx * dx + dy * dy;
     }
 
     private Point? PlanNextEventPoint(
@@ -713,6 +799,7 @@ public sealed class MacroPlayer : IDisposable
     private sealed record TimedMacroEvent(double TimeMs, MacroEvent Event);
     private sealed record TimedPoint(double TimeMs, Point Point);
     private sealed record PlaybackRate(int Hertz, double FrameIntervalMs);
+    private sealed record MoveRunSegment(bool IsStationary, List<TimedMacroEvent> Events);
 
     private sealed class MotionProfile
     {
