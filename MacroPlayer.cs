@@ -31,7 +31,7 @@ public sealed class MacroPlayer : IDisposable
         var token = _cts.Token;
         IsPlaying = true;
         var playbackRate = ResolvePlaybackRate(macro, playbackScreen);
-        status?.Invoke($"再生中: {macro.Name} / {playbackRate.Hertz}Hz");
+        status?.Invoke($"再生中: {macro.Name} / 最大{playbackRate.Hertz}Hz");
 
         try
         {
@@ -187,7 +187,7 @@ public sealed class MacroPlayer : IDisposable
         var endTimeMs = samples[^1].TimeMs;
         if (endTimeMs <= startTimeMs)
         {
-            actions.Add(PlaybackAction.MouseMove(endTimeMs, samples[^1].Point));
+            AddMouseMoveAction(actions, endTimeMs, samples[^1].Point);
             return;
         }
 
@@ -195,10 +195,21 @@ public sealed class MacroPlayer : IDisposable
         var nextFrame = Math.Ceiling((startTimeMs + 0.001) / frameIntervalMs) * frameIntervalMs;
         for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += frameIntervalMs)
         {
-            actions.Add(PlaybackAction.MouseMove(timeMs, InterpolateNatural(samples, timeMs, profile)));
+            AddMouseMoveAction(actions, timeMs, InterpolateNatural(samples, timeMs, profile));
         }
 
-        actions.Add(PlaybackAction.MouseMove(endTimeMs, samples[^1].Point));
+        AddMouseMoveAction(actions, endTimeMs, samples[^1].Point);
+    }
+
+    private static void AddMouseMoveAction(List<PlaybackAction> actions, double timeMs, Point point)
+    {
+        if (actions.LastOrDefault() is { Kind: PlaybackActionKind.MouseMove } previous
+            && previous.Point == point)
+        {
+            return;
+        }
+
+        actions.Add(PlaybackAction.MouseMove(timeMs, point));
     }
 
     private MotionProfile CreateMotionProfile(List<TimedPoint> samples, NoiseSettings noise, bool isDragging)
@@ -387,11 +398,31 @@ public sealed class MacroPlayer : IDisposable
     private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token)
     {
         var stopwatch = Stopwatch.StartNew();
-        foreach (var action in timeline)
+        for (var i = 0; i < timeline.Count; i++)
         {
+            var action = timeline[i];
+            if (action.Kind == PlaybackActionKind.MouseMove)
+            {
+                i = SkipStaleMouseMoves(timeline, i, stopwatch.Elapsed.TotalMilliseconds);
+                action = timeline[i];
+            }
+
             WaitUntil(stopwatch, action.TimeMs, token);
             Execute(action);
         }
+    }
+
+    private static int SkipStaleMouseMoves(IReadOnlyList<PlaybackAction> timeline, int index, double elapsedMs)
+    {
+        var latestIndex = index;
+        while (latestIndex + 1 < timeline.Count
+            && timeline[latestIndex + 1].Kind == PlaybackActionKind.MouseMove
+            && timeline[latestIndex + 1].TimeMs <= elapsedMs)
+        {
+            latestIndex++;
+        }
+
+        return latestIndex;
     }
 
     private static void WaitUntil(Stopwatch stopwatch, double targetMs, CancellationToken token)
