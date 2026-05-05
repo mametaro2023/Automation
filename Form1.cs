@@ -683,12 +683,14 @@ public partial class Form1 : Form
                 traceOverlay.Start();
             }
 
+            Action<IReadOnlyList<Point>>? tracePlan = traceOverlay is null ? null : traceOverlay.SetPlannedPath;
             Action<Point>? tracePoint = traceOverlay is null ? null : traceOverlay.AddPoint;
             await _player.PlayAsync(
                 macro,
                 noise,
                 (int)_playbackSpeedBox.Value,
                 Screen.FromControl(this),
+                tracePlan,
                 tracePoint,
                 SetStatus);
         }

@@ -23,6 +23,7 @@ public sealed class MacroPlayer : IDisposable
         NoiseSettings noise,
         int speedPercent,
         Screen? playbackScreen = null,
+        Action<IReadOnlyList<Point>>? tracePlan = null,
         Action<Point>? tracePoint = null,
         Action<string>? status = null)
     {
@@ -41,6 +42,7 @@ public sealed class MacroPlayer : IDisposable
         {
             RaiseTimerResolution();
             var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs);
+            tracePlan?.Invoke(GetTracePoints(timeline));
             await Task.Run(() => RunTimeline(timeline, token, tracePoint), token);
         }
         catch (OperationCanceledException)
@@ -602,6 +604,38 @@ public sealed class MacroPlayer : IDisposable
             WaitUntil(stopwatch, action.TimeMs, token);
             Execute(action, tracePoint);
         }
+    }
+
+    private static List<Point> GetTracePoints(IReadOnlyList<PlaybackAction> timeline)
+    {
+        var points = new List<Point>();
+        Point? previous = null;
+        foreach (var action in timeline)
+        {
+            if (!HasTracePoint(action))
+            {
+                continue;
+            }
+
+            if (previous == action.Point)
+            {
+                continue;
+            }
+
+            points.Add(action.Point);
+            previous = action.Point;
+        }
+
+        return points;
+    }
+
+    private static bool HasTracePoint(PlaybackAction action)
+    {
+        return action.Kind switch
+        {
+            PlaybackActionKind.KeyDown or PlaybackActionKind.KeyUp => action.Point is { X: not 0 } or { Y: not 0 },
+            _ => true
+        };
     }
 
     private static int SkipStaleMouseMoves(IReadOnlyList<PlaybackAction> timeline, int index, double elapsedMs)
