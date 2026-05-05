@@ -4,6 +4,7 @@ namespace AutomationTool;
 public sealed class PlaybackTraceOverlayForm : Form
 {
     private const int MaxPoints = 12000;
+    private const int PlanRevealMs = 520;
     private const int WS_EX_TRANSPARENT = 0x00000020;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_LAYERED = 0x00080000;
@@ -14,6 +15,7 @@ public sealed class PlaybackTraceOverlayForm : Form
     private readonly object _lock = new();
     private readonly Rectangle _virtualBounds;
     private readonly System.Windows.Forms.Timer _timer = new();
+    private readonly System.Diagnostics.Stopwatch _planRevealClock = new();
     private Point? _lastPoint;
 
     public PlaybackTraceOverlayForm()
@@ -80,6 +82,7 @@ public sealed class PlaybackTraceOverlayForm : Form
             }
         }
 
+        _planRevealClock.Restart();
         Invalidate();
     }
 
@@ -133,7 +136,16 @@ public sealed class PlaybackTraceOverlayForm : Form
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-        if (plannedPoints.Count >= 2)
+        var planProgress = _planRevealClock.IsRunning
+            ? Math.Clamp(_planRevealClock.ElapsedMilliseconds / (double)PlanRevealMs, 0.0, 1.0)
+            : 1.0;
+        if (planProgress >= 1.0)
+        {
+            _planRevealClock.Stop();
+        }
+
+        var visiblePlan = GetPathPrefix(plannedPoints, SmoothStep(planProgress));
+        if (visiblePlan.Count >= 2)
         {
             using var plannedGlow = new Pen(Color.FromArgb(55, 0, 0, 0), 5)
             {
@@ -141,13 +153,13 @@ public sealed class PlaybackTraceOverlayForm : Form
                 EndCap = LineCap.Round,
                 LineJoin = LineJoin.Round
             };
-            using var plannedPen = new Pen(Color.FromArgb(92, 70, 220, 255), 2)
+            using var plannedPen = new Pen(Color.FromArgb(82, Color.Gold), 2)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round,
                 LineJoin = LineJoin.Round
             };
-            using var plannedPath = CreateSmoothPath(plannedPoints);
+            using var plannedPath = CreateSmoothPath(visiblePlan);
             e.Graphics.DrawPath(plannedGlow, plannedPath);
             e.Graphics.DrawPath(plannedPen, plannedPath);
         }
@@ -157,13 +169,13 @@ public sealed class PlaybackTraceOverlayForm : Form
             return;
         }
 
-        using var glow = new Pen(Color.FromArgb(90, 0, 0, 0), 5)
+        using var glow = new Pen(Color.FromArgb(105, 0, 0, 0), 5)
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
             LineJoin = LineJoin.Round
         };
-        using var pen = new Pen(Color.FromArgb(230, 70, 220, 255), 2)
+        using var pen = new Pen(Color.FromArgb(235, Color.Gold), 3)
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
@@ -181,6 +193,7 @@ public sealed class PlaybackTraceOverlayForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _planRevealClock.Stop();
         }
 
         base.Dispose(disposing);
@@ -261,5 +274,70 @@ public sealed class PlaybackTraceOverlayForm : Form
         }
 
         return simplified;
+    }
+
+    private static List<Point> GetPathPrefix(IReadOnlyList<Point> points, double progress)
+    {
+        if (points.Count < 2)
+        {
+            return points.ToList();
+        }
+
+        if (progress >= 1.0)
+        {
+            return points.ToList();
+        }
+
+        var totalLength = 0.0;
+        for (var i = 1; i < points.Count; i++)
+        {
+            totalLength += Distance(points[i - 1], points[i]);
+        }
+
+        if (totalLength <= 0.0)
+        {
+            return points.Take(1).ToList();
+        }
+
+        var targetLength = totalLength * Math.Clamp(progress, 0.0, 1.0);
+        var result = new List<Point> { points[0] };
+        var consumed = 0.0;
+        for (var i = 1; i < points.Count; i++)
+        {
+            var previous = points[i - 1];
+            var current = points[i];
+            var segmentLength = Distance(previous, current);
+            if (segmentLength <= 0.0)
+            {
+                continue;
+            }
+
+            if (consumed + segmentLength >= targetLength)
+            {
+                var t = Math.Clamp((targetLength - consumed) / segmentLength, 0.0, 1.0);
+                result.Add(new Point(
+                    (int)Math.Round(previous.X + (current.X - previous.X) * t),
+                    (int)Math.Round(previous.Y + (current.Y - previous.Y) * t)));
+                return result;
+            }
+
+            result.Add(current);
+            consumed += segmentLength;
+        }
+
+        return result;
+    }
+
+    private static double Distance(Point a, Point b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private static double SmoothStep(double value)
+    {
+        var t = Math.Clamp(value, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
     }
 }
