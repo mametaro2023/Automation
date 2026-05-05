@@ -1,4 +1,6 @@
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
+
 namespace AutomationTool;
 
 public sealed class PlaybackTraceOverlayForm : Form
@@ -32,7 +34,7 @@ public sealed class PlaybackTraceOverlayForm : Form
         Enabled = false;
         Text = "再生軌道";
 
-        _timer.Interval = 33;
+        _timer.Interval = GetTraceTimerIntervalMs();
         _timer.Tick += (_, _) => Invalidate();
     }
 
@@ -339,5 +341,32 @@ public sealed class PlaybackTraceOverlayForm : Form
     {
         var t = Math.Clamp(value, 0.0, 1.0);
         return t * t * (3.0 - 2.0 * t);
+    }
+
+    private static int GetTraceTimerIntervalMs()
+    {
+        var refreshRate = Screen.AllScreens
+            .Select(GetDisplayRefreshRate)
+            .Where(hertz => hertz is not null)
+            .DefaultIfEmpty(60)
+            .Max() ?? 60;
+        return Math.Clamp((int)Math.Floor(1000.0 / (refreshRate + 1)), 1, 16);
+    }
+
+    private static int? GetDisplayRefreshRate(Screen screen)
+    {
+        var devMode = new NativeMethods.DevMode
+        {
+            DmDeviceName = new string('\0', 32),
+            DmFormName = new string('\0', 32),
+            DmSize = (ushort)Marshal.SizeOf<NativeMethods.DevMode>()
+        };
+        if (!NativeMethods.EnumDisplaySettings(screen.DeviceName, NativeMethods.ENUM_CURRENT_SETTINGS, ref devMode))
+        {
+            return null;
+        }
+
+        var hertz = (int)devMode.DmDisplayFrequency;
+        return hertz is >= 30 and <= 1000 ? hertz : null;
     }
 }
