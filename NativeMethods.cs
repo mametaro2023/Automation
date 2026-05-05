@@ -48,6 +48,7 @@ internal static class NativeMethods
     public const int SM_YVIRTUALSCREEN = 77;
     public const int SM_CXVIRTUALSCREEN = 78;
     public const int SM_CYVIRTUALSCREEN = 79;
+    public const int ENUM_CURRENT_SETTINGS = -1;
 
     [Flags]
     public enum HotKeyModifiers : uint
@@ -127,6 +128,35 @@ internal static class NativeMethods
         public IntPtr DwExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct DevMode
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DmDeviceName;
+        public ushort DmSpecVersion;
+        public ushort DmDriverVersion;
+        public ushort DmSize;
+        public ushort DmDriverExtra;
+        public uint DmFields;
+        public int DmPositionX;
+        public int DmPositionY;
+        public uint DmDisplayOrientation;
+        public uint DmDisplayFixedOutput;
+        public short DmColor;
+        public short DmDuplex;
+        public short DmYResolution;
+        public short DmTTOption;
+        public short DmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DmFormName;
+        public ushort DmLogPixels;
+        public uint DmBitsPerPel;
+        public uint DmPelsWidth;
+        public uint DmPelsHeight;
+        public uint DmDisplayFlags;
+        public uint DmDisplayFrequency;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -142,6 +172,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DevMode devMode);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

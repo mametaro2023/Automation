@@ -7,15 +7,20 @@ namespace AutomationTool;
 
 public sealed class MacroPlayer : IDisposable
 {
-    private const double FrameIntervalMs = 4.0;
     private const int EndpointSnapDistancePx = 8;
 
     private readonly Random _random = new();
     private CancellationTokenSource? _cts;
+    private bool _timerResolutionRaised;
 
     public bool IsPlaying { get; private set; }
 
-    public async Task PlayAsync(Macro macro, NoiseSettings noise, int speedPercent, Action<string>? status = null)
+    public async Task PlayAsync(
+        Macro macro,
+        NoiseSettings noise,
+        int speedPercent,
+        Screen? playbackScreen = null,
+        Action<string>? status = null)
     {
         if (IsPlaying || macro.Events.Count == 0)
         {
@@ -25,11 +30,13 @@ public sealed class MacroPlayer : IDisposable
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         IsPlaying = true;
-        status?.Invoke($"再生中: {macro.Name}");
+        var playbackRate = ResolvePlaybackRate(macro, playbackScreen);
+        status?.Invoke($"再生中: {macro.Name} / {playbackRate.Hertz}Hz");
 
         try
         {
-            var timeline = BuildTimeline(macro, noise, speedPercent);
+            RaiseTimerResolution();
+            var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs);
             await Task.Run(() => RunTimeline(timeline, token), token);
         }
         catch (OperationCanceledException)
@@ -41,6 +48,7 @@ public sealed class MacroPlayer : IDisposable
             IsPlaying = false;
             _cts.Dispose();
             _cts = null;
+            RestoreTimerResolution();
             status?.Invoke("待機中。");
         }
     }
@@ -50,7 +58,7 @@ public sealed class MacroPlayer : IDisposable
         _cts?.Cancel();
     }
 
-    private List<PlaybackAction> BuildTimeline(Macro macro, NoiseSettings noise, int speedPercent)
+    private List<PlaybackAction> BuildTimeline(Macro macro, NoiseSettings noise, int speedPercent, double frameIntervalMs)
     {
         var timedEvents = BuildTimedEvents(macro, noise, speedPercent);
         var actions = new List<PlaybackAction>(timedEvents.Count * 2);
@@ -74,7 +82,7 @@ public sealed class MacroPlayer : IDisposable
                 }
 
                 i--;
-                AddMouseRun(actions, currentPosition, currentTimeMs, run, noise, pressedPositions.Count > 0);
+                AddMouseRun(actions, currentPosition, currentTimeMs, run, noise, pressedPositions.Count > 0, frameIntervalMs);
                 currentPosition = new Point(run[^1].Event.X, run[^1].Event.Y);
                 currentTimeMs = run[^1].TimeMs;
 
@@ -162,7 +170,8 @@ public sealed class MacroPlayer : IDisposable
         double startTimeMs,
         List<TimedMacroEvent> run,
         NoiseSettings noise,
-        bool isDragging)
+        bool isDragging,
+        double frameIntervalMs)
     {
         if (run.Count == 0)
         {
@@ -183,8 +192,8 @@ public sealed class MacroPlayer : IDisposable
         }
 
         var profile = CreateMotionProfile(samples, noise, isDragging);
-        var nextFrame = Math.Ceiling((startTimeMs + 0.001) / FrameIntervalMs) * FrameIntervalMs;
-        for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += FrameIntervalMs)
+        var nextFrame = Math.Ceiling((startTimeMs + 0.001) / frameIntervalMs) * frameIntervalMs;
+        for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += frameIntervalMs)
         {
             actions.Add(PlaybackAction.MouseMove(timeMs, InterpolateNatural(samples, timeMs, profile)));
         }
@@ -330,6 +339,51 @@ public sealed class MacroPlayer : IDisposable
         return Math.Max(0, (long)Math.Round(delay * factor));
     }
 
+    private static PlaybackRate ResolvePlaybackRate(Macro macro, Screen? playbackScreen)
+    {
+        var recording = macro.Recording ?? RecordingOptions.Standard();
+        var densityName = recording.Name ?? "";
+        if (recording.MousePollingRateHz <= 60 || densityName.Contains("軽量", StringComparison.Ordinal))
+        {
+            return CreatePlaybackRate(60);
+        }
+
+        if (recording.MousePollingRateHz >= 1000 || densityName.Contains("高精度", StringComparison.Ordinal))
+        {
+            return CreatePlaybackRate(1000);
+        }
+
+        return CreatePlaybackRate(GetDisplayRefreshRate(playbackScreen) ?? 60);
+    }
+
+    private static PlaybackRate CreatePlaybackRate(int hertz)
+    {
+        var clampedHz = Math.Clamp(hertz, 30, 1000);
+        return new PlaybackRate(clampedHz, 1000.0 / clampedHz);
+    }
+
+    private static int? GetDisplayRefreshRate(Screen? screen)
+    {
+        if (screen is null)
+        {
+            return null;
+        }
+
+        var devMode = new NativeMethods.DevMode
+        {
+            DmDeviceName = new string('\0', 32),
+            DmFormName = new string('\0', 32),
+            DmSize = (ushort)Marshal.SizeOf<NativeMethods.DevMode>()
+        };
+        if (!NativeMethods.EnumDisplaySettings(screen.DeviceName, NativeMethods.ENUM_CURRENT_SETTINGS, ref devMode))
+        {
+            return null;
+        }
+
+        var hertz = (int)devMode.DmDisplayFrequency;
+        return hertz is >= 30 and <= 1000 ? hertz : null;
+    }
+
     private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -367,6 +421,29 @@ public sealed class MacroPlayer : IDisposable
             }
         }
     }
+
+    private void RaiseTimerResolution()
+    {
+        if (!_timerResolutionRaised)
+        {
+            _timerResolutionRaised = TimeBeginPeriodNative(1) == 0;
+        }
+    }
+
+    private void RestoreTimerResolution()
+    {
+        if (_timerResolutionRaised)
+        {
+            TimeEndPeriodNative(1);
+            _timerResolutionRaised = false;
+        }
+    }
+
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", ExactSpelling = true)]
+    private static extern uint TimeBeginPeriodNative(uint periodMs);
+
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", ExactSpelling = true)]
+    private static extern uint TimeEndPeriodNative(uint periodMs);
 
     private static void Execute(PlaybackAction action)
     {
@@ -499,6 +576,7 @@ public sealed class MacroPlayer : IDisposable
 
     private sealed record TimedMacroEvent(double TimeMs, MacroEvent Event);
     private sealed record TimedPoint(double TimeMs, Point Point);
+    private sealed record PlaybackRate(int Hertz, double FrameIntervalMs);
 
     private sealed class MotionProfile
     {

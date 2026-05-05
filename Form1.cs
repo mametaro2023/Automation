@@ -353,7 +353,7 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
         _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
         _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
-        _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量=60Hz、標準=200Hz、高精度=1000Hzでマウス位置を確認します。");
+        _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は記録/再生60Hz、標準は記録200Hz/再生は画面Hz、高精度は記録/再生1000Hzです。");
         _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
         _toolTip.SetToolTip(_playbackSpeedBox, "再生全体の速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
         _toolTip.SetToolTip(_coordNoiseBox, "クリック押下/解放の座標に加える小さな揺れです。重要点なので大きくしすぎないでください。");
@@ -620,7 +620,7 @@ public partial class Form1 : Form
 
         UpdateButtons();
         var noise = GetNoiseSettings(macro);
-        await _player.PlayAsync(macro, noise, (int)_playbackSpeedBox.Value, SetStatus);
+        await _player.PlayAsync(macro, noise, (int)_playbackSpeedBox.Value, Screen.FromControl(this), SetStatus);
         UpdateButtons();
     }
 
