@@ -81,6 +81,8 @@ public static class MacroPreviewBuilder
         var noisyMarkers = new List<PreviewMarker>();
         var anchor = Point.Empty;
         var hasAnchor = false;
+        var recordedAnchor = Point.Empty;
+        var hasRecordedAnchor = false;
         var segment = new List<MacroEvent>();
 
         foreach (var macroEvent in events)
@@ -91,7 +93,7 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, noise, random);
+            FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, recordedAnchor, hasRecordedAnchor, noise, random);
             segment.Clear();
 
             if (TryGetPoint(macroEvent, out var point))
@@ -102,10 +104,12 @@ public static class MacroPreviewBuilder
                 noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPoint));
                 anchor = noisyPoint;
                 hasAnchor = true;
+                recordedAnchor = point;
+                hasRecordedAnchor = true;
             }
         }
 
-        FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, noise, random);
+        FlushMoveSegment(noisyPath, noisyTimedPath, segment, anchor, hasAnchor, recordedAnchor, hasRecordedAnchor, noise, random);
         preview.NoisyPaths.Add(noisyPath);
         preview.NoisyTimedPaths.Add(noisyTimedPath);
         preview.NoisyMarkers.Add(noisyMarkers);
@@ -117,11 +121,24 @@ public static class MacroPreviewBuilder
         List<MacroEvent> segment,
         Point anchor,
         bool hasAnchor,
+        Point recordedAnchor,
+        bool hasRecordedAnchor,
         NoiseSettings noise,
         Random random)
     {
         if (segment.Count == 0)
         {
+            return;
+        }
+
+        if (hasAnchor && hasRecordedAnchor && IsStationarySegment(segment, recordedAnchor))
+        {
+            foreach (var macroEvent in segment)
+            {
+                noisyPath.Add(anchor);
+                noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, anchor));
+            }
+
             return;
         }
 
@@ -149,6 +166,11 @@ public static class MacroPreviewBuilder
                 (int)Math.Round(macroEvent.Y + normalY * sideOffset)));
             noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPath[^1]));
         }
+    }
+
+    private static bool IsStationarySegment(IReadOnlyList<MacroEvent> segment, Point recordedAnchor)
+    {
+        return segment.All(item => item.X == recordedAnchor.X && item.Y == recordedAnchor.Y);
     }
 
     private static double RandomSigned(Random random, double minMagnitude, double maxMagnitude)
