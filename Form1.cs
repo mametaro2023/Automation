@@ -21,10 +21,7 @@ public partial class Form1 : Form
     private Button _playButton = null!;
     private Button _editButton = null!;
     private Button _deleteButton = null!;
-    private Button _saveButton = null!;
-    private Button _loadButton = null!;
     private Button _previewButton = null!;
-    private CheckBox _showPlaybackTraceBox = null!;
     private ListView _macroList = null!;
     private Label _summaryLabel = null!;
     private TextBox _nameBox = null!;
@@ -44,7 +41,8 @@ public partial class Form1 : Form
     private NumericUpDown _playbackSpeedBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
     private SplitContainer _mainSplit = null!;
-    private SplitContainer _rightSplit = null!;
+    private Control _advancedSettingsPanel = null!;
+    private RowStyle _advancedSettingsRow = null!;
     private CancellationTokenSource? _countdownCts;
     private HotkeyGesture _emergencyStopHotkey = CreateDefaultEmergencyHotkey();
     private bool _updatingSelection;
@@ -106,17 +104,31 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3
+            RowCount = 4
         };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         Controls.Add(root);
+
         _emergencyOverlay.Visible = false;
         _emergencyOverlay.Bounds = ClientRectangle;
         _emergencyOverlay.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
         Controls.Add(_emergencyOverlay);
         _emergencyOverlay.BringToFront();
+
+        var menu = new MenuStrip
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(4, 2, 0, 2)
+        };
+        var fileMenu = new ToolStripMenuItem("ファイル");
+        fileMenu.DropDownItems.Add("読込...", null, LoadButtonOnClick);
+        fileMenu.DropDownItems.Add("出力...", null, SaveButtonOnClick);
+        menu.Items.Add(fileMenu);
+        MainMenuStrip = menu;
+        root.Controls.Add(menu, 0, 0);
 
         var topPanel = new FlowLayoutPanel
         {
@@ -125,34 +137,22 @@ public partial class Form1 : Form
             Padding = new Padding(8, 7, 8, 5),
             WrapContents = false
         };
-        root.Controls.Add(topPanel, 0, 0);
+        root.Controls.Add(topPanel, 0, 1);
 
         _recordButton = CreateButton("記録", RecordButtonOnClick);
         _stopButton = CreateButton("停止", StopButtonOnClick);
         _playButton = CreateButton("再生", PlayButtonOnClick);
+        _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
         _editButton = CreateButton("編集", EditButtonOnClick);
         _deleteButton = CreateButton("削除", DeleteButtonOnClick);
-        _saveButton = CreateButton("出力", SaveButtonOnClick);
-        _loadButton = CreateButton("読込", LoadButtonOnClick);
-        _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
-        _showPlaybackTraceBox = new CheckBox
-        {
-            Text = "再生軌道",
-            AutoSize = true,
-            Checked = true,
-            Margin = new Padding(0, 4, 10, 0)
-        };
         topPanel.Controls.AddRange(new Control[]
         {
             _recordButton,
             _stopButton,
             _playButton,
-            _editButton,
-            _deleteButton,
-            _saveButton,
-            _loadButton,
             _previewButton,
-            _showPlaybackTraceBox
+            _editButton,
+            _deleteButton
         });
 
         _mainSplit = new SplitContainer
@@ -163,7 +163,7 @@ public partial class Form1 : Form
             Panel2MinSize = 120,
             BorderStyle = BorderStyle.Fixed3D
         };
-        root.Controls.Add(_mainSplit, 0, 1);
+        root.Controls.Add(_mainSplit, 0, 2);
 
         _macroList = new ListView
         {
@@ -180,32 +180,23 @@ public partial class Form1 : Form
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
         _mainSplit.Panel1.Controls.Add(_macroList);
 
-        _rightSplit = new SplitContainer
+        var rightPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Orientation = Orientation.Horizontal,
-            Panel1MinSize = 110,
-            Panel2MinSize = 100,
-            FixedPanel = FixedPanel.Panel1
-        };
-        _mainSplit.Panel2.Controls.Add(_rightSplit);
-
-        var settingsPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 2,
+            ColumnCount = 1,
+            RowCount = 5,
             Padding = new Padding(8)
         };
-        settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 290));
-        settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
-        settingsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
-        _rightSplit.Panel1.Controls.Add(settingsPanel);
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
+        rightPanel.RowStyles.Add(_advancedSettingsRow);
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _mainSplit.Panel2.Controls.Add(rightPanel);
 
         var macroGroup = CreateGroup("マクロ");
-        settingsPanel.Controls.Add(macroGroup, 0, 0);
-        settingsPanel.SetRowSpan(macroGroup, 2);
+        rightPanel.Controls.Add(macroGroup, 0, 0);
         AddLabeledControl(macroGroup, "名前", _nameBox = new TextBox(), 24, 105);
         _nameBox.TextChanged += NameBoxOnTextChanged;
         AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58, 105);
@@ -215,21 +206,21 @@ public partial class Form1 : Form
         _emergencyHotkeyBox.KeyDown += EmergencyHotkeyBoxOnKeyDown;
         macroGroup.Controls.Add(new Label
         {
-            Text = "入力欄を選択してキーを押す（削除で解除）",
+            Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
             Location = new Point(12, 126),
-            Size = new Size(260, 36)
+            Size = new Size(420, 20)
         });
 
-        var recordGroup = CreateGroup("記録");
-        settingsPanel.Controls.Add(recordGroup, 1, 0);
+        var recordGroup = CreateGroup("記録・再生");
+        rightPanel.Controls.Add(recordGroup, 0, 1);
         _recordingModeBox = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _recordingModeBox.Items.AddRange(new object[] { "完全記録", "イベント間隔一定" });
+        _recordingModeBox.Items.AddRange(new object[] { "通常", "イベント重視" });
         _recordingModeBox.SelectedIndex = 0;
         _recordingModeBox.SelectedIndexChanged += (_, _) => RecordingModeOnChanged();
-        AddLabeledControl(recordGroup, "記録方法", _recordingModeBox, 20, 118);
+        AddLabeledControl(recordGroup, "記録方式", _recordingModeBox, 20, 118);
         _densityBox = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList
@@ -237,68 +228,85 @@ public partial class Form1 : Form
         _densityBox.Items.AddRange(new object[] { "軽量", "標準", "高精度" });
         _densityBox.SelectedIndex = 1;
         AddLabeledControl(recordGroup, "密度", _densityBox, 48, 118);
-        AddLabeledControl(recordGroup, "イベント間隔(ms)", _eventIntervalBox = new NumericUpDown
-        {
-            Minimum = 10,
-            Maximum = 600000,
-            Increment = 10,
-            Value = 200,
-            ThousandsSeparator = true
-        }, 76, 118);
-        AddLabeledControl(recordGroup, "押下時間(ms)", _holdDurationBox = new NumericUpDown
-        {
-            Minimum = 1,
-            Maximum = 600000,
-            Increment = 10,
-            Value = 60,
-            ThousandsSeparator = true
-        }, 104, 118);
         AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 60,
             Value = 3
-        }, 132, 118);
+        }, 76, 118);
         AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
         {
             Minimum = 10,
             Maximum = 500,
             Increment = 10,
             Value = 100
-        }, 160, 118);
+        }, 104, 118);
 
-        var noiseGroup = CreateGroup("ノイズ");
-        settingsPanel.Controls.Add(noiseGroup, 1, 1);
-        AddLabeledControl(noiseGroup, "クリック座標(px)", _coordNoiseBox = new NumericUpDown
+        var advancedToggle = new CheckBox
+        {
+            Text = "詳細設定を表示",
+            AutoSize = true,
+            Dock = DockStyle.Left,
+            Margin = new Padding(8, 4, 4, 0)
+        };
+        advancedToggle.CheckedChanged += (_, _) => ToggleAdvancedSettings(advancedToggle.Checked);
+        rightPanel.Controls.Add(advancedToggle, 0, 2);
+
+        _advancedSettingsPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Visible = false
+        };
+        rightPanel.Controls.Add(_advancedSettingsPanel, 0, 3);
+
+        var detailGroup = CreateGroup("詳細設定");
+        _advancedSettingsPanel.Controls.Add(detailGroup);
+        AddLabeledControl(detailGroup, "イベント間隔(ms)", _eventIntervalBox = new NumericUpDown
+        {
+            Minimum = 10,
+            Maximum = 600000,
+            Increment = 10,
+            Value = 200,
+            ThousandsSeparator = true
+        }, 20, 118);
+        AddLabeledControl(detailGroup, "押下時間(ms)", _holdDurationBox = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 600000,
+            Increment = 10,
+            Value = 60,
+            ThousandsSeparator = true
+        }, 48, 118);
+        AddLabeledControl(detailGroup, "クリック座標(px)", _coordNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 20,
             Value = 2
-        }, 18, 118);
-        _timeNoiseLabel = AddLabeledControl(noiseGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
+        }, 76, 118);
+        _timeNoiseLabel = AddLabeledControl(detailGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 5
-        }, 46, 118);
-        AddLabeledControl(noiseGroup, "軌道ブレ(px)", _trajectoryNoiseBox = new NumericUpDown
+        }, 104, 118);
+        AddLabeledControl(detailGroup, "軌道ブレ(px)", _trajectoryNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 80,
             Value = 16
-        }, 74, 118);
-        AddLabeledControl(noiseGroup, "加速度(%)", _accelNoiseBox = new NumericUpDown
+        }, 132, 118);
+        AddLabeledControl(detailGroup, "加速度(%)", _accelNoiseBox = new NumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 12
-        }, 102, 118);
-        AddLabeledControl(noiseGroup, "プレビュー数", _previewPathCountBox = new NumericUpDown
+        }, 160, 118);
+        AddLabeledControl(detailGroup, "プレビュー数", _previewPathCountBox = new NumericUpDown
         {
             Minimum = 1,
             Maximum = 10,
             Value = 3
-        }, 130, 118);
+        }, 188, 118);
         WireNoiseSettingChanges();
 
         _summaryLabel = new Label
@@ -306,9 +314,9 @@ public partial class Form1 : Form
             Dock = DockStyle.Fill,
             BorderStyle = BorderStyle.Fixed3D,
             Padding = new Padding(10),
-            Text = "記録データの詳細は表示しません。\r\nプレビューで軌跡を確認できます。"
+            Text = "マクロが選択されていません。"
         };
-        _rightSplit.Panel2.Controls.Add(_summaryLabel);
+        rightPanel.Controls.Add(_summaryLabel, 0, 4);
 
         ConfigureParameterTooltips();
         RecordingModeOnChanged();
@@ -319,11 +327,11 @@ public partial class Form1 : Form
             Dock = DockStyle.Fill
         };
         statusStrip.Items.Add(_statusLabel);
-        root.Controls.Add(statusStrip, 0, 2);
+        root.Controls.Add(statusStrip, 0, 3);
 
+        ToggleAdvancedSettings(false);
         UpdateButtons();
     }
-
     private void AdjustSplitters()
     {
         if (_mainSplit is not null && _mainSplit.Width > 0)
@@ -338,17 +346,6 @@ public partial class Form1 : Form
             }
         }
 
-        if (_rightSplit is not null && _rightSplit.Height > 0)
-        {
-            const int desiredTop = 410;
-            const int desiredTopMin = 386;
-            const int desiredBottomMin = 160;
-            var maxDistance = _rightSplit.Height - desiredBottomMin - _rightSplit.SplitterWidth;
-            if (maxDistance >= desiredTopMin)
-            {
-                _rightSplit.SplitterDistance = Math.Clamp(desiredTop, desiredTopMin, maxDistance);
-            }
-        }
     }
 
     private static Button CreateButton(string text, EventHandler click)
@@ -389,6 +386,18 @@ public partial class Form1 : Form
         return label;
     }
 
+    private void ToggleAdvancedSettings(bool visible)
+    {
+        if (_advancedSettingsPanel is null || _advancedSettingsRow is null)
+        {
+            return;
+        }
+
+        _advancedSettingsPanel.Visible = visible;
+        _advancedSettingsRow.Height = visible ? 220 : 0;
+        _advancedSettingsPanel.Parent?.PerformLayout();
+    }
+
     private void ConfigureParameterTooltips()
     {
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
@@ -405,7 +414,6 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_trajectoryNoiseBox, "クリック以外のマウス軌道に加える曲がり具合です。大きいほど毎回違う軌道になります。");
         _toolTip.SetToolTip(_accelNoiseBox, "マウス移動中の加速・減速の偏りです。人間らしい速度変化を作ります。");
         _toolTip.SetToolTip(_previewPathCountBox, "プレビューで表示するノイズ入り軌道の本数です。多いほど揺れ幅を確認できますが画面は混みます。");
-        _toolTip.SetToolTip(_showPlaybackTraceBox, "再生中に、実際に送信したノイズ込みのマウス軌道を画面上へ表示します。");
     }
 
     private void RecordButtonOnClick(object? sender, EventArgs e)
@@ -674,30 +682,17 @@ public partial class Form1 : Form
 
         UpdateButtons();
         var noise = GetNoiseSettings(macro);
-        PlaybackTraceOverlayForm? traceOverlay = null;
         try
         {
-            if (_showPlaybackTraceBox.Checked)
-            {
-                traceOverlay = new PlaybackTraceOverlayForm();
-                traceOverlay.Start();
-            }
-
-            Action<IReadOnlyList<Point>>? tracePlan = traceOverlay is null ? null : traceOverlay.SetPlannedPath;
-            Action<Point>? tracePoint = traceOverlay is null ? null : traceOverlay.AddPoint;
             await _player.PlayAsync(
                 macro,
                 noise,
                 (int)_playbackSpeedBox.Value,
                 Screen.FromControl(this),
-                tracePlan,
-                tracePoint,
                 SetStatus);
         }
         finally
         {
-            traceOverlay?.Close();
-            traceOverlay?.Dispose();
             UpdateButtons();
         }
     }
@@ -1006,8 +1001,6 @@ public partial class Form1 : Form
         _editButton.Enabled = selected && !recording && !playing && !countingDown;
         _previewButton.Enabled = selected && !recording && !playing && !countingDown;
         _deleteButton.Enabled = selected && !recording && !playing && !countingDown;
-        _saveButton.Enabled = !recording && !playing && !countingDown;
-        _loadButton.Enabled = !recording && !playing && !countingDown;
     }
 
     private void SetStatus(string message)
