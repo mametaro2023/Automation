@@ -7,7 +7,6 @@ namespace AutomationTool;
 
 public sealed class MacroPlayer : IDisposable
 {
-    private const int EndpointSnapDistancePx = 8;
     private const int StationaryRadiusPx = 2;
     private const double StationaryMinDurationMs = 10.0;
     private const int StationaryMinSamples = 3;
@@ -130,11 +129,19 @@ public sealed class MacroPlayer : IDisposable
                 continue;
             }
 
+            var previousTimeMs = currentTimeMs;
             currentTimeMs = Math.Max(currentTimeMs, timedEvent.TimeMs);
             switch (macroEvent.Kind)
             {
                 case MacroEventKind.MouseDown:
                     var downPoint = GetEventPoint(macroEvent, noise, plannedEventPoints);
+                    currentPosition = AddMouseTransition(
+                        actions,
+                        currentPosition,
+                        previousTimeMs,
+                        currentTimeMs,
+                        downPoint,
+                        frameIntervalMs);
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, downPoint, macroEvent.Button, true));
                     currentPosition = downPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
@@ -153,6 +160,13 @@ public sealed class MacroPlayer : IDisposable
                         upPoint = GetEventPoint(macroEvent, noise, plannedEventPoints);
                     }
 
+                    currentPosition = AddMouseTransition(
+                        actions,
+                        currentPosition,
+                        previousTimeMs,
+                        currentTimeMs,
+                        upPoint,
+                        frameIntervalMs);
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, upPoint, macroEvent.Button, false));
                     currentPosition = upPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
@@ -161,27 +175,28 @@ public sealed class MacroPlayer : IDisposable
                     break;
                 case MacroEventKind.MouseWheel:
                     var wheelPoint = new Point(macroEvent.X, macroEvent.Y);
+                    currentPosition = AddMouseTransition(
+                        actions,
+                        currentPosition,
+                        previousTimeMs,
+                        currentTimeMs,
+                        wheelPoint,
+                        frameIntervalMs);
                     actions.Add(PlaybackAction.MouseWheel(currentTimeMs, wheelPoint, macroEvent.WheelDelta));
                     currentPosition = wheelPoint;
                     currentRecordedPosition = wheelPoint;
                     break;
                 case MacroEventKind.KeyDown:
                 case MacroEventKind.KeyUp:
-                    var keyPoint = GetKeySnapPoint(macroEvent, currentPosition);
                     var recordedKeyPoint = macroEvent.X != 0 || macroEvent.Y != 0
                         ? new Point(macroEvent.X, macroEvent.Y)
                         : (Point?)null;
-                    if (keyPoint is not null)
-                    {
-                        currentPosition = keyPoint.Value;
-                    }
-
                     if (recordedKeyPoint is not null)
                     {
                         currentRecordedPosition = recordedKeyPoint.Value;
                     }
 
-                    actions.Add(PlaybackAction.Key(currentTimeMs, keyPoint, macroEvent.KeyCode, macroEvent.Kind == MacroEventKind.KeyDown));
+                    actions.Add(PlaybackAction.Key(currentTimeMs, macroEvent.KeyCode, macroEvent.Kind == MacroEventKind.KeyDown));
                     break;
             }
         }
@@ -393,6 +408,38 @@ public sealed class MacroPlayer : IDisposable
         actions.Add(PlaybackAction.MouseMove(timeMs, point));
     }
 
+    private static Point AddMouseTransition(
+        List<PlaybackAction> actions,
+        Point start,
+        double startTimeMs,
+        double endTimeMs,
+        Point end,
+        double frameIntervalMs)
+    {
+        if (start == end)
+        {
+            return end;
+        }
+
+        if (endTimeMs <= startTimeMs)
+        {
+            return start;
+        }
+
+        var nextFrame = Math.Ceiling((startTimeMs + 0.001) / frameIntervalMs) * frameIntervalMs;
+        for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += frameIntervalMs)
+        {
+            var progress = Math.Clamp((timeMs - startTimeMs) / Math.Max(0.001, endTimeMs - startTimeMs), 0.0, 1.0);
+            var eased = SmoothStep(progress);
+            AddMouseMoveAction(actions, timeMs, new Point(
+                (int)Math.Round(start.X + (end.X - start.X) * eased),
+                (int)Math.Round(start.Y + (end.Y - start.Y) * eased)));
+        }
+
+        AddMouseMoveAction(actions, endTimeMs, end);
+        return end;
+    }
+
     private MotionProfile CreateMotionProfile(List<TimedPoint> samples, NoiseSettings noise, bool isDragging)
     {
         var start = samples[0].Point;
@@ -514,20 +561,6 @@ public sealed class MacroPlayer : IDisposable
         }
 
         return new Point(x, y);
-    }
-
-    private static Point? GetKeySnapPoint(MacroEvent macroEvent, Point currentPosition)
-    {
-        if (macroEvent.X == 0 && macroEvent.Y == 0)
-        {
-            return null;
-        }
-
-        var dx = currentPosition.X - macroEvent.X;
-        var dy = currentPosition.Y - macroEvent.Y;
-        return dx * dx + dy * dy > EndpointSnapDistancePx * EndpointSnapDistancePx
-            ? new Point(macroEvent.X, macroEvent.Y)
-            : null;
     }
 
     private long ApplyTimeJitter(long delay, int percent)
@@ -864,11 +897,10 @@ public sealed class MacroPlayer : IDisposable
             WheelDelta = delta
         };
 
-        public static PlaybackAction Key(double timeMs, Point? point, Keys keyCode, bool down) => new()
+        public static PlaybackAction Key(double timeMs, Keys keyCode, bool down) => new()
         {
             TimeMs = timeMs,
             Kind = down ? PlaybackActionKind.KeyDown : PlaybackActionKind.KeyUp,
-            Point = point ?? Point.Empty,
             KeyCode = keyCode
         };
     }

@@ -93,8 +93,8 @@ public partial class Form1 : Form
     {
         Text = "Automation Tool";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(920, 560);
-        ClientSize = new Size(1040, 640);
+        MinimumSize = new Size(920, 680);
+        ClientSize = new Size(1040, 720);
         Font = new Font("MS UI Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
         Resize += (_, _) => AdjustSplitters();
 
@@ -187,8 +187,8 @@ public partial class Form1 : Form
             RowCount = 5,
             Padding = new Padding(8)
         };
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
         rightPanel.RowStyles.Add(_advancedSettingsRow);
@@ -255,6 +255,7 @@ public partial class Form1 : Form
         _advancedSettingsPanel = new Panel
         {
             Dock = DockStyle.Fill,
+            AutoScroll = true,
             Visible = false
         };
         rightPanel.Controls.Add(_advancedSettingsPanel, 0, 3);
@@ -394,7 +395,7 @@ public partial class Form1 : Form
         }
 
         _advancedSettingsPanel.Visible = visible;
-        _advancedSettingsRow.Height = visible ? 220 : 0;
+        _advancedSettingsRow.Height = visible ? 236 : 0;
         _advancedSettingsPanel.Parent?.PerformLayout();
     }
 
