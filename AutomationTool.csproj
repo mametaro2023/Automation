@@ -11,9 +11,9 @@
     <AssemblyTitle>Automation Tool</AssemblyTitle>
     <Product>Automation Tool</Product>
     <Description>Lightweight Windows keyboard and mouse macro recorder/player.</Description>
-    <Version>1.3.0</Version>
-    <FileVersion>1.3.0.0</FileVersion>
-    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <Version>1.4.0</Version>
+    <FileVersion>1.4.0.0</FileVersion>
+    <AssemblyVersion>1.4.0.0</AssemblyVersion>
     <ApplicationIcon>Assets\AutomationApp.ico</ApplicationIcon>
   </PropertyGroup>
 
