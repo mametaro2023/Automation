@@ -1586,15 +1586,24 @@ public partial class Form1 : Form
         if (!macro.IsEnabled && conflicts.Count > 0)
         {
             var conflictNames = string.Join(", ", conflicts.Select(item => item.Name));
-            SetStatus($"ショートカットが '{conflictNames}' と重複しているため有効化できません。");
-            MessageBox.Show(
+            var result = MessageBox.Show(
                 this,
-                $"同じショートカットを使っている有効マクロがあります。\r\n\r\n既存: {conflictNames}\r\n\r\nこのマクロを有効化するには、既存マクロを無効化するかショートカットを変更してください。",
+                $"同じショートカットを使っている有効マクロがあります。\r\n\r\n既存: {conflictNames}\r\n\r\n既存マクロを無効化して、このマクロを有効化しますか？",
                 "ショートカット重複",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            RefreshMacroList(macro.Id);
-            return;
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.Yes)
+            {
+                SetStatus("マクロの有効化を取り消しました。");
+                RefreshMacroList(macro.Id);
+                return;
+            }
+
+            foreach (var conflict in conflicts)
+            {
+                conflict.IsEnabled = false;
+            }
         }
 
         macro.IsEnabled = !macro.IsEnabled;
