@@ -650,18 +650,26 @@ public sealed class MacroPlayer : IDisposable
 
     private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token)
     {
+        var pressedInputs = new PressedInputTracker();
         var stopwatch = Stopwatch.StartNew();
-        for (var i = 0; i < timeline.Count; i++)
+        try
         {
-            var action = timeline[i];
-            if (action.Kind == PlaybackActionKind.MouseMove)
+            for (var i = 0; i < timeline.Count; i++)
             {
-                i = SkipStaleMouseMoves(timeline, i, stopwatch.Elapsed.TotalMilliseconds);
-                action = timeline[i];
-            }
+                var action = timeline[i];
+                if (action.Kind == PlaybackActionKind.MouseMove)
+                {
+                    i = SkipStaleMouseMoves(timeline, i, stopwatch.Elapsed.TotalMilliseconds);
+                    action = timeline[i];
+                }
 
-            WaitUntil(stopwatch, action.TimeMs, token);
-            Execute(action);
+                WaitUntil(stopwatch, action.TimeMs, token);
+                Execute(action, pressedInputs);
+            }
+        }
+        finally
+        {
+            pressedInputs.ReleaseAll();
         }
     }
 
@@ -729,7 +737,7 @@ public sealed class MacroPlayer : IDisposable
     [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", ExactSpelling = true)]
     private static extern uint TimeEndPeriodNative(uint periodMs);
 
-    private static void Execute(PlaybackAction action)
+    private static void Execute(PlaybackAction action, PressedInputTracker pressedInputs)
     {
         switch (action.Kind)
         {
@@ -739,10 +747,12 @@ public sealed class MacroPlayer : IDisposable
             case PlaybackActionKind.MouseDown:
                 MoveMouseExact(action.Point.X, action.Point.Y);
                 SendMouseButton(action.Button, true);
+                pressedInputs.MouseDown(action.Button);
                 break;
             case PlaybackActionKind.MouseUp:
                 MoveMouseExact(action.Point.X, action.Point.Y);
                 SendMouseButton(action.Button, false);
+                pressedInputs.MouseUp(action.Button);
                 break;
             case PlaybackActionKind.MouseWheel:
                 MoveMouseExact(action.Point.X, action.Point.Y);
@@ -755,6 +765,7 @@ public sealed class MacroPlayer : IDisposable
                 }
 
                 SendKey(action.KeyCode, true);
+                pressedInputs.KeyDown(action.KeyCode);
                 break;
             case PlaybackActionKind.KeyUp:
                 if (action.Point is { X: not 0 } or { Y: not 0 })
@@ -763,6 +774,7 @@ public sealed class MacroPlayer : IDisposable
                 }
 
                 SendKey(action.KeyCode, false);
+                pressedInputs.KeyUp(action.KeyCode);
                 break;
         }
     }
@@ -862,6 +874,80 @@ public sealed class MacroPlayer : IDisposable
     private sealed record TimedPoint(double TimeMs, Point Point);
     private sealed record PlaybackRate(int Hertz, double FrameIntervalMs);
     private sealed record MoveRunSegment(bool IsStationary, List<TimedMacroEvent> Events);
+
+    private sealed class PressedInputTracker
+    {
+        private readonly List<Keys> _keyOrder = new();
+        private readonly HashSet<Keys> _pressedKeys = new();
+        private readonly List<RecordedMouseButton> _buttonOrder = new();
+        private readonly HashSet<RecordedMouseButton> _pressedButtons = new();
+
+        public void KeyDown(Keys key)
+        {
+            if (key == Keys.None || !_pressedKeys.Add(key))
+            {
+                return;
+            }
+
+            _keyOrder.Add(key);
+        }
+
+        public void KeyUp(Keys key)
+        {
+            if (key == Keys.None || !_pressedKeys.Remove(key))
+            {
+                return;
+            }
+
+            _keyOrder.Remove(key);
+        }
+
+        public void MouseDown(RecordedMouseButton button)
+        {
+            if (button == RecordedMouseButton.None || !_pressedButtons.Add(button))
+            {
+                return;
+            }
+
+            _buttonOrder.Add(button);
+        }
+
+        public void MouseUp(RecordedMouseButton button)
+        {
+            if (button == RecordedMouseButton.None || !_pressedButtons.Remove(button))
+            {
+                return;
+            }
+
+            _buttonOrder.Remove(button);
+        }
+
+        public void ReleaseAll()
+        {
+            for (var i = _buttonOrder.Count - 1; i >= 0; i--)
+            {
+                var button = _buttonOrder[i];
+                if (_pressedButtons.Contains(button))
+                {
+                    SendMouseButton(button, false);
+                }
+            }
+
+            for (var i = _keyOrder.Count - 1; i >= 0; i--)
+            {
+                var key = _keyOrder[i];
+                if (_pressedKeys.Contains(key))
+                {
+                    SendKey(key, false);
+                }
+            }
+
+            _pressedButtons.Clear();
+            _buttonOrder.Clear();
+            _pressedKeys.Clear();
+            _keyOrder.Clear();
+        }
+    }
 
     private sealed class MotionProfile
     {
