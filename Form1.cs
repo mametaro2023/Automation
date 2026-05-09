@@ -1063,7 +1063,9 @@ public partial class Form1 : Form
             return;
         }
 
-        macro.Events = editor.TrimmedEvents;
+        macro.Events = editor.EditedEvents;
+        macro.TrimStartMs = editor.TrimStartMs;
+        macro.TrimEndMs = editor.TrimEndMs;
         RefreshMacroList(macro.Id);
         RefreshSummary(macro);
         AutoSaveMacros();
@@ -1127,10 +1129,13 @@ public partial class Form1 : Form
 
         _macros.Clear();
         _macros.AddRange(MacroStore.Load(dialog.FileName));
+        var disabledDuplicates = DisableDuplicateEnabledHotkeys();
         RefreshMacroList();
         RefreshHotkeys();
         AutoSaveMacros();
-        SetStatus($"読み込みました: {dialog.FileName}");
+        SetStatus(disabledDuplicates
+            ? $"読み込みました。ショートカット重複のため一部マクロを無効化しました: {dialog.FileName}"
+            : $"読み込みました: {dialog.FileName}");
     }
 
     private void ShowMacroStorageLocationOnClick(object? sender, EventArgs e)
@@ -1198,9 +1203,17 @@ public partial class Form1 : Form
                     SetMacroStorePath(selectedPath);
                     _macros.Clear();
                     _macros.AddRange(loaded);
+                    var disabledDuplicates = DisableDuplicateEnabledHotkeys();
                     RefreshMacroList();
                     RefreshHotkeys();
-                    SetStatus($"保存場所を変更し、読み込みました: {_macroStorePath}");
+                    if (disabledDuplicates)
+                    {
+                        AutoSaveMacros();
+                    }
+
+                    SetStatus(disabledDuplicates
+                        ? $"保存場所を変更し、読み込みました。ショートカット重複のため一部マクロを無効化しました: {_macroStorePath}"
+                        : $"保存場所を変更し、読み込みました: {_macroStorePath}");
                     return;
                 }
 
@@ -1569,6 +1582,21 @@ public partial class Form1 : Form
 
     private void ToggleMacroEnabled(Macro macro)
     {
+        var conflicts = GetEnabledHotkeyConflicts(macro, macro.Hotkey);
+        if (!macro.IsEnabled && conflicts.Count > 0)
+        {
+            var conflictNames = string.Join(", ", conflicts.Select(item => item.Name));
+            SetStatus($"ショートカットが '{conflictNames}' と重複しているため有効化できません。");
+            MessageBox.Show(
+                this,
+                $"同じショートカットを使っている有効マクロがあります。\r\n\r\n既存: {conflictNames}\r\n\r\nこのマクロを有効化するには、既存マクロを無効化するかショートカットを変更してください。",
+                "ショートカット重複",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            RefreshMacroList(macro.Id);
+            return;
+        }
+
         macro.IsEnabled = !macro.IsEnabled;
         RefreshMacroList(macro.Id);
         RefreshSummary(macro);
@@ -1608,23 +1636,52 @@ public partial class Form1 : Form
             return;
         }
 
+        var previousHotkey = macro.Hotkey;
         if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
         {
             macro.Hotkey = new HotkeyGesture();
         }
         else
         {
-            macro.Hotkey = new HotkeyGesture
+            var newHotkey = new HotkeyGesture
             {
                 Ctrl = e.Control,
                 Alt = e.Alt,
                 Shift = e.Shift,
                 Key = e.KeyCode
             };
+
+            var conflicts = GetEnabledHotkeyConflicts(macro, newHotkey);
+            if (macro.IsEnabled && conflicts.Count > 0)
+            {
+                var conflictNames = string.Join(", ", conflicts.Select(item => item.Name));
+                var result = MessageBox.Show(
+                    this,
+                    $"同じショートカットを使っている有効マクロがあります。\r\n\r\n既存: {conflictNames}\r\n\r\n既存マクロを無効化して登録しますか？",
+                    "ショートカット重複",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+                if (result != DialogResult.Yes)
+                {
+                    macro.Hotkey = previousHotkey;
+                    _hotkeyBox.Text = macro.Hotkey.ToString();
+                    SetStatus("ショートカット登録を取り消しました。");
+                    return;
+                }
+
+                foreach (var conflict in conflicts)
+                {
+                    conflict.IsEnabled = false;
+                }
+            }
+
+            macro.Hotkey = newHotkey;
         }
 
         _hotkeyBox.Text = macro.Hotkey.ToString();
         RefreshMacroList(macro.Id);
+        RefreshSummary(macro);
         RefreshHotkeys();
         AutoSaveMacros();
     }
@@ -1700,13 +1757,21 @@ public partial class Form1 : Form
         try
         {
             _macros.Clear();
+            var disabledDuplicates = false;
             if (File.Exists(_macroStorePath))
             {
                 _macros.AddRange(MacroStore.Load(_macroStorePath));
+                disabledDuplicates = DisableDuplicateEnabledHotkeys();
+                if (disabledDuplicates)
+                {
+                    AutoSaveMacros();
+                }
             }
 
             RefreshMacroList();
-            SetStatus($"自動読み込み: {_macros.Count} 件 / {_macroStorePath}");
+            SetStatus(disabledDuplicates
+                ? $"自動読み込み: {_macros.Count} 件 / 重複ショートカットを無効化 / {_macroStorePath}"
+                : $"自動読み込み: {_macros.Count} 件 / {_macroStorePath}");
         }
         catch (Exception ex)
         {
@@ -1868,9 +1933,10 @@ public partial class Form1 : Form
         _macroList.Items.Clear();
         foreach (var macro in _macros)
         {
+            var playbackEvents = macro.GetPlaybackEvents();
             var item = new ListViewItem(macro.Name);
             item.SubItems.Add(macro.Hotkey.ToString());
-            item.SubItems.Add(macro.Events.Count.ToString());
+            item.SubItems.Add(playbackEvents.Count.ToString());
             item.SubItems.Add($"{macro.DurationMs} ms");
             item.SubItems.Add(macro.IsEnabled ? "有効" : "無効");
             item.Tag = macro;
@@ -1900,7 +1966,7 @@ public partial class Form1 : Form
         _summaryLabel.Text =
             $"名前: {macro.Name}\r\n" +
             $"状態: {(macro.IsEnabled ? "有効" : "無効")}\r\n" +
-            $"イベント数: {macro.Events.Count}\r\n" +
+            $"イベント数: {macro.GetPlaybackEvents().Count} / 元 {macro.Events.Count}\r\n" +
             $"時間: {macro.DurationMs} ms\r\n" +
             $"再生速度: {macro.PlaybackSpeedPercent}%\r\n" +
             $"記録方法: {GetRecordingModeText(macro.Recording)}";
@@ -1934,6 +2000,50 @@ public partial class Form1 : Form
         {
             SetStatus(ex.Message);
         }
+    }
+
+    private bool DisableDuplicateEnabledHotkeys()
+    {
+        var seen = new List<Macro>();
+        var changed = false;
+        foreach (var macro in _macros)
+        {
+            if (!macro.IsEnabled || macro.Hotkey.IsEmpty)
+            {
+                continue;
+            }
+
+            if (seen.Any(item => AreSameHotkey(item.Hotkey, macro.Hotkey)))
+            {
+                macro.IsEnabled = false;
+                changed = true;
+                continue;
+            }
+
+            seen.Add(macro);
+        }
+
+        return changed;
+    }
+
+    private List<Macro> GetEnabledHotkeyConflicts(Macro target, HotkeyGesture hotkey)
+    {
+        return _macros.Where(item =>
+            item.Id != target.Id
+            && item.IsEnabled
+            && AreSameHotkey(item.Hotkey, hotkey))
+            .ToList();
+    }
+
+    private static bool AreSameHotkey(HotkeyGesture left, HotkeyGesture right)
+    {
+        return !left.IsEmpty
+            && !right.IsEmpty
+            && left.Ctrl == right.Ctrl
+            && left.Alt == right.Alt
+            && left.Shift == right.Shift
+            && left.Win == right.Win
+            && left.Key == right.Key;
     }
 
     private bool IsHotkeyInputFocused()

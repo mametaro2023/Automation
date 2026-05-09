@@ -46,13 +46,62 @@ public sealed class Macro
     public string Name { get; set; } = "New Macro";
     public bool IsEnabled { get; set; } = true;
     public int PlaybackSpeedPercent { get; set; } = 100;
+    public long TrimStartMs { get; set; }
+    public long? TrimEndMs { get; set; }
     public HotkeyGesture Hotkey { get; set; } = new();
     public RecordingOptions Recording { get; set; } = RecordingOptions.Standard();
     public NoiseSettings Noise { get; set; } = new();
     public List<MacroEvent> Events { get; set; } = new();
 
     [JsonIgnore]
-    public long DurationMs => Events.Count == 0 ? 0 : Events[^1].TimeOffsetMs;
+    public long RawDurationMs => Events.Count == 0 ? 0 : Events.Max(item => item.TimeOffsetMs);
+
+    [JsonIgnore]
+    public long DurationMs
+    {
+        get
+        {
+            if (Events.Count == 0)
+            {
+                return 0;
+            }
+
+            var startMs = Math.Clamp(TrimStartMs, 0, RawDurationMs);
+            var endMs = Math.Clamp(TrimEndMs ?? RawDurationMs, startMs, RawDurationMs);
+            return Math.Max(0, endMs - startMs);
+        }
+    }
+
+    public List<MacroEvent> GetPlaybackEvents()
+    {
+        if (Events.Count == 0)
+        {
+            return new List<MacroEvent>();
+        }
+
+        var rawDuration = RawDurationMs;
+        var startMs = Math.Clamp(TrimStartMs, 0, rawDuration);
+        var endMs = Math.Clamp(TrimEndMs ?? rawDuration, startMs, rawDuration);
+        return Events
+            .Where(item => item.TimeOffsetMs >= startMs && item.TimeOffsetMs <= endMs)
+            .OrderBy(item => item.TimeOffsetMs)
+            .Select(item => CloneWithOffset(item, startMs))
+            .ToList();
+    }
+
+    private static MacroEvent CloneWithOffset(MacroEvent source, long offsetMs)
+    {
+        return new MacroEvent
+        {
+            Kind = source.Kind,
+            TimeOffsetMs = Math.Max(0, source.TimeOffsetMs - offsetMs),
+            X = source.X,
+            Y = source.Y,
+            Button = source.Button,
+            WheelDelta = source.WheelDelta,
+            KeyCode = source.KeyCode
+        };
+    }
 }
 
 public sealed class HotkeyGesture

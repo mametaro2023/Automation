@@ -45,7 +45,7 @@ public static class MacroPreviewBuilder
     public static MacroPreview Build(Macro macro, NoiseSettings noise, int variantCount)
     {
         var preview = new MacroPreview();
-        var events = macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
+        var events = macro.GetPlaybackEvents();
         preview.DurationMs = events.Count == 0 ? 0 : events[^1].TimeOffsetMs;
         var count = Math.Clamp(variantCount, 1, 10);
         foreach (var macroEvent in events.Where(e => e.Kind == MacroEventKind.MouseMove))

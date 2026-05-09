@@ -25,6 +25,8 @@ public sealed class MacroTrimEditorForm : Form
     private readonly Stack<EditorSnapshot> _redoStack = new();
     private bool _updatingSelection;
     private int? _selectedEventIndex;
+    private readonly long _initialTrimStartMs;
+    private readonly long _initialTrimEndMs;
 
     public MacroTrimEditorForm(Macro macro)
     {
@@ -32,6 +34,9 @@ public sealed class MacroTrimEditorForm : Form
             .Select(CloneEvent)
             .OrderBy(item => item.TimeOffsetMs)
             .ToList();
+        var rawDuration = Math.Max(0, GetDuration());
+        _initialTrimStartMs = Math.Clamp(macro.TrimStartMs, 0, Math.Max(0, rawDuration - 1));
+        _initialTrimEndMs = Math.Clamp(macro.TrimEndMs ?? rawDuration, _initialTrimStartMs + 1, Math.Max(1, rawDuration));
 
         Text = "マクロ編集";
         StartPosition = FormStartPosition.CenterParent;
@@ -45,14 +50,17 @@ public sealed class MacroTrimEditorForm : Form
         var duration = Math.Max(1, (int)Math.Min(int.MaxValue, GetDuration()));
         _startTrack = CreateTrackBar(duration);
         _endTrack = CreateTrackBar(duration);
-        _endTrack.Value = duration;
+        _startTrack.Value = (int)Math.Min(int.MaxValue, _initialTrimStartMs);
+        _endTrack.Value = (int)Math.Min(int.MaxValue, _initialTrimEndMs);
 
         BuildInterface();
         WireEvents();
         RefreshEditor();
     }
 
-    public List<MacroEvent> TrimmedEvents { get; private set; } = new();
+    public List<MacroEvent> EditedEvents { get; private set; } = new();
+    public long TrimStartMs { get; private set; }
+    public long? TrimEndMs { get; private set; }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -712,8 +720,7 @@ public sealed class MacroTrimEditorForm : Form
         var startMs = _startTrack.Value;
         var endMs = _endTrack.Value;
         var edited = _events
-            .Where(item => item.TimeOffsetMs >= startMs && item.TimeOffsetMs <= endMs)
-            .Select(item => CloneWithOffset(item, startMs))
+            .Select(CloneEvent)
             .OrderBy(item => item.TimeOffsetMs)
             .ToList();
 
@@ -723,7 +730,9 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
-        TrimmedEvents = edited;
+        EditedEvents = edited;
+        TrimStartMs = startMs;
+        TrimEndMs = endMs >= GetDuration() ? null : endMs;
         DialogResult = DialogResult.OK;
     }
 
@@ -842,13 +851,6 @@ public sealed class MacroTrimEditorForm : Form
             WheelDelta = source.WheelDelta,
             KeyCode = source.KeyCode
         };
-    }
-
-    private static MacroEvent CloneWithOffset(MacroEvent source, long offsetMs)
-    {
-        var clone = CloneEvent(source);
-        clone.TimeOffsetMs = Math.Max(0, clone.TimeOffsetMs - offsetMs);
-        return clone;
     }
 
     private static bool IsDrawablePoint(MacroEvent macroEvent)

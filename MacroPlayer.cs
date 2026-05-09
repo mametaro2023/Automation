@@ -25,7 +25,7 @@ public sealed class MacroPlayer : IDisposable
         Screen? playbackScreen = null,
         Action<string>? status = null)
     {
-        if (IsPlaying || macro.Events.Count == 0)
+        if (IsPlaying || macro.GetPlaybackEvents().Count == 0)
         {
             return;
         }
@@ -219,13 +219,14 @@ public sealed class MacroPlayer : IDisposable
     {
         var speed = Math.Clamp(speedPercent, 10, 2000) / 100.0;
         var fixedIntervalMode = macro.Recording?.TimingMode == RecordingTimingMode.FixedEventInterval;
+        var playbackEvents = macro.GetPlaybackEvents();
         var events = fixedIntervalMode
             ? MacroTimingNormalizer.NormalizeFixedEventIntervals(
-                macro.Events,
+                playbackEvents,
                 macro.Recording ?? RecordingOptions.Standard(),
                 noise.TimeJitterMs,
                 _random)
-            : macro.Events.OrderBy(e => e.TimeOffsetMs).ToList();
+            : playbackEvents;
         var timedEvents = new List<TimedMacroEvent>(events.Count);
         long previousOriginalMs = 0;
         double playbackTimeMs = 0;
