@@ -7,6 +7,7 @@ namespace AutomationTool;
 public sealed class HotkeyManager : IDisposable
 {
     public const int EmergencyStopId = 900;
+    public const int RecordingStopId = 901;
     private const int FirstMacroId = 1000;
     private readonly Dictionary<int, Guid> _registeredMacros = new();
     private readonly List<int> _registeredIds = new();
@@ -14,7 +15,11 @@ public sealed class HotkeyManager : IDisposable
 
     public IReadOnlyDictionary<int, Guid> RegisteredMacros => _registeredMacros;
 
-    public void RegisterAll(IntPtr windowHandle, IEnumerable<Macro> macros, HotkeyGesture emergencyStopHotkey)
+    public void RegisterAll(
+        IntPtr windowHandle,
+        IEnumerable<Macro> macros,
+        HotkeyGesture emergencyStopHotkey,
+        HotkeyGesture recordingStopHotkey)
     {
         UnregisterAll();
         _windowHandle = windowHandle;
@@ -22,6 +27,11 @@ public sealed class HotkeyManager : IDisposable
         if (!emergencyStopHotkey.IsEmpty)
         {
             Register(windowHandle, EmergencyStopId, emergencyStopHotkey);
+        }
+
+        if (!recordingStopHotkey.IsEmpty)
+        {
+            Register(windowHandle, RecordingStopId, recordingStopHotkey);
         }
 
         var id = FirstMacroId;

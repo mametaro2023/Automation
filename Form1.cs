@@ -27,6 +27,7 @@ public partial class Form1 : Form
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
+    private TextBox _recordingStopHotkeyBox = null!;
     private ComboBox _recordingModeBox = null!;
     private ComboBox _densityBox = null!;
     private NumericUpDown _eventIntervalBox = null!;
@@ -45,6 +46,9 @@ public partial class Form1 : Form
     private RowStyle _advancedSettingsRow = null!;
     private CancellationTokenSource? _countdownCts;
     private HotkeyGesture _emergencyStopHotkey = CreateDefaultEmergencyHotkey();
+    private HotkeyGesture _recordingStopHotkey = CreateDefaultRecordingStopHotkey();
+    private FormWindowState _windowStateBeforeRecording = FormWindowState.Normal;
+    private bool _restoreWindowAfterRecording;
     private bool _updatingSelection;
 
     public Form1()
@@ -71,6 +75,16 @@ public partial class Form1 : Form
             if (hotkeyId == HotkeyManager.EmergencyStopId)
             {
                 EmergencyStopCurrentWork();
+                return;
+            }
+
+            if (hotkeyId == HotkeyManager.RecordingStopId)
+            {
+                if (_recorder.IsRecording || IsCountingDown)
+                {
+                    StopCurrentWork();
+                }
+
                 return;
             }
 
@@ -190,7 +204,7 @@ public partial class Form1 : Form
             RowCount = 5,
             Padding = new Padding(8)
         };
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
@@ -207,10 +221,13 @@ public partial class Form1 : Form
         AddLabeledControl(macroGroup, "緊急停止", _emergencyHotkeyBox = new TextBox { ReadOnly = true }, 92, 105);
         _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
         _emergencyHotkeyBox.KeyDown += EmergencyHotkeyBoxOnKeyDown;
+        AddLabeledControl(macroGroup, "記録停止", _recordingStopHotkeyBox = new TextBox { ReadOnly = true }, 126, 105);
+        _recordingStopHotkeyBox.Text = _recordingStopHotkey.ToString();
+        _recordingStopHotkeyBox.KeyDown += RecordingStopHotkeyBoxOnKeyDown;
         macroGroup.Controls.Add(new Label
         {
             Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
-            Location = new Point(12, 126),
+            Location = new Point(12, 158),
             Size = new Size(420, 20)
         });
 
@@ -407,6 +424,7 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
         _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
         _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
+        _toolTip.SetToolTip(_recordingStopHotkeyBox, "記録中だけ使う停止キーです。停止キー自体は記録データから除外します。Backspace/Deleteで既定値に戻します。");
         _toolTip.SetToolTip(_recordingModeBox, "完全記録は操作時刻をそのまま残します。イベント間隔一定はクリックやキー入力の間隔を指定msへ整えます。");
         _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は記録/再生60Hz、標準は記録200Hz/再生は画面Hz、高精度は記録/再生1000Hzです。");
         _toolTip.SetToolTip(_eventIntervalBox, "イベント間隔一定で使う基準間隔です。押下/解放ペア以外の次イベントまでの時間になります。");
@@ -434,27 +452,36 @@ public partial class Form1 : Form
 
         _countdownCts = new CancellationTokenSource();
         var token = _countdownCts.Token;
+        var countdownScreen = Screen.FromControl(this);
+        var countdownOverlay = new CountdownOverlayForm(countdownScreen);
         UpdateButtons();
 
         try
         {
+            MinimizeForRecording();
             var countdown = (int)_countdownBox.Value;
             for (var remaining = countdown; remaining > 0; remaining--)
             {
                 SetStatus($"記録開始まで {remaining} 秒。");
+                countdownOverlay.ShowCountdown(remaining);
                 _countdownSound.PlayTick();
                 await Task.Delay(1000, token);
             }
 
             _countdownSound.PlayStart();
+            countdownOverlay.ShowStart();
+            await Task.Delay(250, token);
             StartRecording();
         }
         catch (OperationCanceledException)
         {
             SetStatus("記録開始をキャンセルしました。");
+            RestoreAfterRecording();
         }
         finally
         {
+            countdownOverlay.Close();
+            countdownOverlay.Dispose();
             _countdownCts?.Dispose();
             _countdownCts = null;
             UpdateButtons();
@@ -473,9 +500,38 @@ public partial class Form1 : Form
         }
         catch (Exception ex)
         {
+            RestoreAfterRecording();
             SetStatus(ex.Message);
             MessageBox.Show(this, ex.Message, "記録エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private void MinimizeForRecording()
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            _restoreWindowAfterRecording = false;
+            return;
+        }
+
+        _windowStateBeforeRecording = WindowState;
+        _restoreWindowAfterRecording = true;
+        WindowState = FormWindowState.Minimized;
+    }
+
+    private void RestoreAfterRecording()
+    {
+        if (!_restoreWindowAfterRecording)
+        {
+            return;
+        }
+
+        WindowState = _windowStateBeforeRecording == FormWindowState.Minimized
+            ? FormWindowState.Normal
+            : _windowStateBeforeRecording;
+        Show();
+        Activate();
+        _restoreWindowAfterRecording = false;
     }
 
     private void StopButtonOnClick(object? sender, EventArgs e)
@@ -601,12 +657,14 @@ public partial class Form1 : Form
         if (_countdownCts is not null)
         {
             _countdownCts.Cancel();
+            RestoreAfterRecording();
             return;
         }
 
         if (_recorder.IsRecording)
         {
             var events = _recorder.Stop();
+            RemoveTrailingRecordingStopHotkeyEvents(events);
             RemoveTrailingToolWindowMouseEvents(events);
             if (events.Count > 0)
             {
@@ -637,6 +695,7 @@ public partial class Form1 : Form
             }
 
             RefreshHotkeys();
+            RestoreAfterRecording();
         }
         else if (_player.IsPlaying)
         {
@@ -667,6 +726,64 @@ public partial class Form1 : Form
 
             events.RemoveAt(i);
         }
+    }
+
+    private void RemoveTrailingRecordingStopHotkeyEvents(List<MacroEvent> events)
+    {
+        if (events.Count == 0 || _recordingStopHotkey.IsEmpty)
+        {
+            return;
+        }
+
+        var hotkeyKeys = GetGestureKeys(_recordingStopHotkey);
+        var lastTime = events[^1].TimeOffsetMs;
+        for (var i = events.Count - 1; i >= 0; i--)
+        {
+            var macroEvent = events[i];
+            if (lastTime - macroEvent.TimeOffsetMs > 1200)
+            {
+                break;
+            }
+
+            if (macroEvent.Kind is (MacroEventKind.KeyDown or MacroEventKind.KeyUp)
+                && hotkeyKeys.Contains(macroEvent.KeyCode))
+            {
+                events.RemoveAt(i);
+            }
+        }
+    }
+
+    private static HashSet<Keys> GetGestureKeys(HotkeyGesture gesture)
+    {
+        var keys = new HashSet<Keys> { gesture.Key };
+        if (gesture.Ctrl)
+        {
+            keys.Add(Keys.ControlKey);
+            keys.Add(Keys.LControlKey);
+            keys.Add(Keys.RControlKey);
+        }
+
+        if (gesture.Alt)
+        {
+            keys.Add(Keys.Menu);
+            keys.Add(Keys.LMenu);
+            keys.Add(Keys.RMenu);
+        }
+
+        if (gesture.Shift)
+        {
+            keys.Add(Keys.ShiftKey);
+            keys.Add(Keys.LShiftKey);
+            keys.Add(Keys.RShiftKey);
+        }
+
+        if (gesture.Win)
+        {
+            keys.Add(Keys.LWin);
+            keys.Add(Keys.RWin);
+        }
+
+        return keys;
     }
 
     private static bool IsMouseEvent(MacroEvent macroEvent)
@@ -792,6 +909,34 @@ public partial class Form1 : Form
         }
 
         _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
+        RefreshHotkeys();
+    }
+
+    private void RecordingStopHotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
+    {
+        e.SuppressKeyPress = true;
+
+        if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin)
+        {
+            return;
+        }
+
+        if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
+        {
+            _recordingStopHotkey = CreateDefaultRecordingStopHotkey();
+        }
+        else
+        {
+            _recordingStopHotkey = new HotkeyGesture
+            {
+                Ctrl = e.Control,
+                Alt = e.Alt,
+                Shift = e.Shift,
+                Key = e.KeyCode
+            };
+        }
+
+        _recordingStopHotkeyBox.Text = _recordingStopHotkey.ToString();
         RefreshHotkeys();
     }
 
@@ -984,7 +1129,7 @@ public partial class Form1 : Form
 
         try
         {
-            _hotkeys.RegisterAll(Handle, _macros, _emergencyStopHotkey);
+            _hotkeys.RegisterAll(Handle, _macros, _emergencyStopHotkey, _recordingStopHotkey);
         }
         catch (Exception ex)
         {
@@ -1025,6 +1170,16 @@ public partial class Form1 : Form
             Ctrl = true,
             Alt = true,
             Key = Keys.Pause
+        };
+    }
+
+    private static HotkeyGesture CreateDefaultRecordingStopHotkey()
+    {
+        return new HotkeyGesture
+        {
+            Ctrl = true,
+            Alt = true,
+            Key = Keys.End
         };
     }
 
