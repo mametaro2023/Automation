@@ -107,6 +107,7 @@ public sealed class MacroPlayer : IDisposable
                     currentPosition = AddMouseRun(
                         actions,
                         currentPosition,
+                        currentRecordedPosition,
                         currentTimeMs,
                         segmentEvents,
                         noise,
@@ -236,6 +237,7 @@ public sealed class MacroPlayer : IDisposable
     private Point AddMouseRun(
         List<PlaybackAction> actions,
         Point startPosition,
+        Point recordedStartPosition,
         double startTimeMs,
         List<TimedMacroEvent> run,
         NoiseSettings noise,
@@ -258,7 +260,9 @@ public sealed class MacroPlayer : IDisposable
         {
             new(startTimeMs, startPosition)
         };
-        samples.AddRange(run.Select(item => new TimedPoint(item.TimeMs, new Point(item.Event.X, item.Event.Y))));
+        samples.AddRange(run.Select(item => new TimedPoint(
+            item.TimeMs,
+            TranslateRecordedPoint(new Point(item.Event.X, item.Event.Y), recordedStartPosition, startPosition))));
         if (endPointOverride is not null)
         {
             samples[^1] = samples[^1] with { Point = endPointOverride.Value };
@@ -280,6 +284,13 @@ public sealed class MacroPlayer : IDisposable
 
         AddMouseMoveAction(actions, endTimeMs, samples[^1].Point);
         return samples[^1].Point;
+    }
+
+    private static Point TranslateRecordedPoint(Point recordedPoint, Point recordedAnchor, Point playbackAnchor)
+    {
+        return new Point(
+            playbackAnchor.X + recordedPoint.X - recordedAnchor.X,
+            playbackAnchor.Y + recordedPoint.Y - recordedAnchor.Y);
     }
 
     private static List<MoveRunSegment> SplitMoveRun(IReadOnlyList<TimedMacroEvent> run, Point previousRecordedPosition)
