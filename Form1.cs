@@ -43,7 +43,7 @@ public partial class Form1 : Form
     private Button _editButton = null!;
     private Button _deleteButton = null!;
     private Button _previewButton = null!;
-    private ListView _macroList = null!;
+    private FixedColumnListView _macroList = null!;
     private Label _summaryLabel = null!;
     private MenuStrip _menu = null!;
     private ToolStripMenuItem _systemThemeItem = null!;
@@ -78,6 +78,7 @@ public partial class Form1 : Form
     private FormWindowState _windowStateBeforeRecording = FormWindowState.Normal;
     private bool _restoreWindowAfterRecording;
     private bool _updatingSelection;
+    private bool _updatingMacroListColumns;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int SetPreferredAppModeDelegate(int appMode);
@@ -280,7 +281,7 @@ public partial class Form1 : Form
         _mainSplit.Panel1.BackColor = UiWindowBack;
         _mainSplit.Panel2.BackColor = UiWindowBack;
 
-        _macroList = new ListView
+        _macroList = new FixedColumnListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
@@ -296,10 +297,13 @@ public partial class Form1 : Form
         };
         _macroList.DrawColumnHeader += MacroListOnDrawColumnHeader;
         _macroList.DrawSubItem += MacroListOnDrawSubItem;
+        _macroList.Resize += (_, _) => UpdateMacroListColumnWidths();
+        _macroList.ColumnWidthChanging += MacroListOnColumnWidthChanging;
         _macroList.Columns.Add("名前", 150);
         _macroList.Columns.Add("ショートカット", 100);
         _macroList.Columns.Add("件数", 45);
         _macroList.Columns.Add("時間", 88);
+        UpdateMacroListColumnWidths();
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
         _mainSplit.Panel1.Controls.Add(_macroList);
 
@@ -1322,6 +1326,50 @@ public partial class Form1 : Form
         TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? "", _macroList.Font, textRect, textColor, flags);
     }
 
+    private void MacroListOnColumnWidthChanging(object? sender, ColumnWidthChangingEventArgs e)
+    {
+        if (_updatingMacroListColumns)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        e.NewWidth = e.ColumnIndex >= 0 && e.ColumnIndex < _macroList.Columns.Count
+            ? _macroList.Columns[e.ColumnIndex].Width
+            : e.NewWidth;
+    }
+
+    private void UpdateMacroListColumnWidths()
+    {
+        if (_macroList is null || _macroList.Columns.Count < 4)
+        {
+            return;
+        }
+
+        const int nameWidth = 150;
+        const int shortcutWidth = 100;
+        const int countWidth = 45;
+        var scrollbarReserve = _macroList.Items.Count > 0 ? SystemInformation.VerticalScrollBarWidth + 2 : 2;
+        var timeWidth = Math.Max(
+            88,
+            _macroList.ClientSize.Width - nameWidth - shortcutWidth - countWidth - scrollbarReserve - 1);
+
+        _updatingMacroListColumns = true;
+        try
+        {
+            _macroList.BeginUpdate();
+            _macroList.Columns[0].Width = nameWidth;
+            _macroList.Columns[1].Width = shortcutWidth;
+            _macroList.Columns[2].Width = countWidth;
+            _macroList.Columns[3].Width = timeWidth;
+            _macroList.EndUpdate();
+        }
+        finally
+        {
+            _updatingMacroListColumns = false;
+        }
+    }
+
     private void NameBoxOnTextChanged(object? sender, EventArgs e)
     {
         if (_updatingSelection)
@@ -1581,6 +1629,7 @@ public partial class Form1 : Form
         }
 
         _macroList.EndUpdate();
+        UpdateMacroListColumnWidths();
         if (_macroList.SelectedItems.Count == 0 && _macroList.Items.Count > 0 && selectedId is null)
         {
             _macroList.Items[0].Selected = true;
@@ -1781,6 +1830,44 @@ public partial class Form1 : Form
             }
 
             parent = parent.Parent;
+        }
+    }
+
+    private sealed class FixedColumnListView : ListView
+    {
+        private const int WM_SETCURSOR = 0x0020;
+        private const int WM_LBUTTONDOWN = 0x0201;
+        private const int WM_LBUTTONDBLCLK = 0x0203;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg is WM_SETCURSOR or WM_LBUTTONDOWN or WM_LBUTTONDBLCLK
+                && IsOnColumnDivider(PointToClient(Cursor.Position)))
+            {
+                return;
+            }
+
+            base.WndProc(ref m);
+        }
+
+        private bool IsOnColumnDivider(Point point)
+        {
+            if (View != View.Details || Columns.Count == 0 || point.Y > 28)
+            {
+                return false;
+            }
+
+            var x = 0;
+            foreach (ColumnHeader column in Columns)
+            {
+                x += column.Width;
+                if (Math.Abs(point.X - x) <= 4)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 

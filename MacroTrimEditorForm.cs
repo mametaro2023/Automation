@@ -24,7 +24,6 @@ public sealed class MacroTrimEditorForm : Form
     private readonly Stack<EditorSnapshot> _undoStack = new();
     private readonly Stack<EditorSnapshot> _redoStack = new();
     private bool _updatingSelection;
-    private bool _settingStartPoint;
     private int? _selectedEventIndex;
 
     public MacroTrimEditorForm(Macro macro)
@@ -360,7 +359,6 @@ public sealed class MacroTrimEditorForm : Form
         _applyWaitButton.Click += (_, _) => ApplyWaitBefore();
         _applyPositionButton.Click += (_, _) => ApplyPosition();
         _setStartPointButton.Click += (_, _) => BeginSetStartPoint();
-        _canvas.StartPointSelected += ApplyStartPoint;
         _okButton.Click += OkButtonOnClick;
         _cancelButton.Click += (_, _) => DialogResult = DialogResult.Cancel;
     }
@@ -442,7 +440,6 @@ public sealed class MacroTrimEditorForm : Form
         var startMs = _startTrack.Value;
         var endMs = _endTrack.Value;
         _canvas.SetData(_events, startMs, endMs, _selectedEventIndex);
-        _canvas.SetStartPointMode(_settingStartPoint);
         _rangeLabel.Text = $"残す範囲: {startMs:N0} ms - {endMs:N0} ms / {GetDuration():N0} ms";
     }
 
@@ -606,10 +603,18 @@ public sealed class MacroTrimEditorForm : Form
 
     private void BeginSetStartPoint()
     {
-        _settingStartPoint = true;
-        _setStartPointButton.Text = "軌道上を左クリック";
-        _canvas.SetStartPointMode(true);
-        _canvas.Focus();
+        var firstDrawable = _events.FirstOrDefault(IsDrawablePoint);
+        if (firstDrawable is null)
+        {
+            MessageBox.Show(this, "開始地点を修正できる座標がありません。", "開始地点修正", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var selector = new StartPointSelectionOverlayForm(_events, new Point(firstDrawable.X, firstDrawable.Y));
+        if (selector.ShowDialog(this) == DialogResult.OK)
+        {
+            ApplyStartPoint(selector.SelectedStartPoint);
+        }
     }
 
     private void ApplyStartPoint(Point newStart)
@@ -617,17 +622,11 @@ public sealed class MacroTrimEditorForm : Form
         var firstDrawable = _events.FirstOrDefault(IsDrawablePoint);
         if (firstDrawable is null)
         {
-            _settingStartPoint = false;
-            _setStartPointButton.Text = "開始地点修正";
-            _canvas.SetStartPointMode(false);
             return;
         }
 
         var deltaX = newStart.X - firstDrawable.X;
         var deltaY = newStart.Y - firstDrawable.Y;
-        _settingStartPoint = false;
-        _setStartPointButton.Text = "開始地点修正";
-        _canvas.SetStartPointMode(false);
 
         if (deltaX == 0 && deltaY == 0)
         {
@@ -927,9 +926,6 @@ public sealed class MacroTrimEditorForm : Form
         private long _startMs;
         private long _endMs;
         private int? _selectedIndex;
-        private CanvasMapping? _mapping;
-        private bool _startPointMode;
-
         public MacroEditorCanvas()
         {
             DoubleBuffered = true;
@@ -938,7 +934,6 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         public event Action<int>? EventSelected;
-        public event Action<Point>? StartPointSelected;
 
         public void SetData(List<MacroEvent> events, long startMs, long endMs, int? selectedIndex)
         {
@@ -955,22 +950,9 @@ public sealed class MacroTrimEditorForm : Form
             Invalidate();
         }
 
-        public void SetStartPointMode(bool enabled)
-        {
-            _startPointMode = enabled;
-            Cursor = enabled ? Cursors.Cross : Cursors.Default;
-            Invalidate();
-        }
-
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (_startPointMode && e.Button == MouseButtons.Left && _mapping is not null)
-            {
-                StartPointSelected?.Invoke(_mapping.ToSource(e.Location));
-                return;
-            }
-
             var hit = _markerHits
                 .Select(item => new
                 {
@@ -1006,7 +988,6 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             var mapping = CreateMapping(drawable.Select(item => new Point(item.Event.X, item.Event.Y)).ToList());
-            _mapping = mapping;
             DrawGrid(e.Graphics);
             DrawPath(e.Graphics, drawable.Select(item => item.Event).ToList(), mapping.ToCanvas, Color.FromArgb(70, Color.White), 2);
             DrawPath(
@@ -1036,10 +1017,6 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             DrawSelectedCallout(e.Graphics, mapping.ToCanvas);
-            if (_startPointMode)
-            {
-                DrawStartPointHint(e.Graphics);
-            }
         }
 
         private void DrawMarker(Graphics graphics, TimedEvent item, Func<Point, Point> mapper)
@@ -1161,23 +1138,6 @@ public sealed class MacroTrimEditorForm : Form
                 point => new Point(
                     minX + (int)Math.Round((point.X - pad) / scale),
                     minY + (int)Math.Round((point.Y - pad) / scale)));
-        }
-
-        private static void DrawStartPointHint(Graphics graphics)
-        {
-            const string text = "開始地点を左クリックで設定";
-            var rect = new Rectangle(18, 18, 208, 30);
-            using var bg = new SolidBrush(Color.FromArgb(220, 8, 10, 14));
-            using var border = new Pen(Color.FromArgb(95, 220, 255), 1);
-            graphics.FillRectangle(bg, rect);
-            graphics.DrawRectangle(border, rect);
-            TextRenderer.DrawText(
-                graphics,
-                text,
-                SystemFonts.MessageBoxFont,
-                rect,
-                Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
         private static void DrawPath(Graphics graphics, List<MacroEvent> events, Func<Point, Point> mapper, Color color, int width)
