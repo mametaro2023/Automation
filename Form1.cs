@@ -20,6 +20,8 @@ public partial class Form1 : Form
     private static Color UiPressed = Color.FromArgb(229, 233, 238);
     private static Color UiPrimaryHover = Color.FromArgb(29, 78, 216);
     private static Color UiPrimaryPressed = Color.FromArgb(30, 64, 175);
+    private static Color UiSelectionBack = Color.FromArgb(37, 99, 235);
+    private static Color UiSelectionText = Color.White;
 
     private readonly InputRecorder _recorder = new();
     private readonly MacroPlayer _player = new();
@@ -278,8 +280,11 @@ public partial class Form1 : Form
             BackColor = UiPanelBack,
             ForeColor = UiText,
             GridLines = false,
-            Font = new Font(UiFontName, 9F, FontStyle.Regular, GraphicsUnit.Point)
+            Font = new Font(UiFontName, 9F, FontStyle.Regular, GraphicsUnit.Point),
+            OwnerDraw = true
         };
+        _macroList.DrawColumnHeader += MacroListOnDrawColumnHeader;
+        _macroList.DrawSubItem += MacroListOnDrawSubItem;
         _macroList.Columns.Add("名前", 150);
         _macroList.Columns.Add("ショートカット", 110);
         _macroList.Columns.Add("件数", 54);
@@ -607,19 +612,21 @@ public partial class Form1 : Form
     {
         if (dark)
         {
-            UiWindowBack = Color.FromArgb(24, 27, 32);
-            UiPanelBack = Color.FromArgb(34, 38, 45);
-            UiChromeBack = Color.FromArgb(29, 33, 39);
-            UiBorder = Color.FromArgb(69, 76, 86);
-            UiText = Color.FromArgb(235, 238, 242);
-            UiMutedText = Color.FromArgb(166, 174, 185);
-            UiPrimary = Color.FromArgb(59, 130, 246);
-            UiDanger = Color.FromArgb(248, 113, 113);
-            UiDangerBorder = Color.FromArgb(119, 65, 65);
-            UiHover = Color.FromArgb(43, 49, 58);
-            UiPressed = Color.FromArgb(51, 59, 70);
-            UiPrimaryHover = Color.FromArgb(37, 99, 235);
-            UiPrimaryPressed = Color.FromArgb(29, 78, 216);
+            UiWindowBack = Color.FromArgb(19, 20, 20);
+            UiPanelBack = Color.FromArgb(30, 31, 32);
+            UiChromeBack = Color.FromArgb(22, 23, 24);
+            UiBorder = Color.FromArgb(48, 50, 52);
+            UiText = Color.FromArgb(232, 234, 237);
+            UiMutedText = Color.FromArgb(154, 160, 166);
+            UiPrimary = Color.FromArgb(42, 63, 92);
+            UiDanger = Color.FromArgb(242, 139, 130);
+            UiDangerBorder = Color.FromArgb(92, 52, 51);
+            UiHover = Color.FromArgb(39, 40, 41);
+            UiPressed = Color.FromArgb(47, 49, 51);
+            UiPrimaryHover = Color.FromArgb(48, 73, 108);
+            UiPrimaryPressed = Color.FromArgb(37, 55, 82);
+            UiSelectionBack = Color.FromArgb(43, 64, 92);
+            UiSelectionText = Color.FromArgb(232, 234, 237);
             return;
         }
 
@@ -636,6 +643,8 @@ public partial class Form1 : Form
         UiPressed = Color.FromArgb(229, 233, 238);
         UiPrimaryHover = Color.FromArgb(29, 78, 216);
         UiPrimaryPressed = Color.FromArgb(30, 64, 175);
+        UiSelectionBack = Color.FromArgb(37, 99, 235);
+        UiSelectionText = Color.White;
     }
 
     private void ApplyThemeToControl(Control control)
@@ -664,6 +673,7 @@ public partial class Form1 : Form
             case ListView listView:
                 listView.BackColor = UiPanelBack;
                 listView.ForeColor = UiText;
+                ApplyNativeControlTheme(listView);
                 break;
             case SectionGroupBox groupBox:
                 groupBox.BackColor = UiPanelBack;
@@ -686,6 +696,7 @@ public partial class Form1 : Form
             case ComboBox:
             case NumericUpDown:
                 StyleInputControl(control);
+                ApplyNativeControlTheme(control);
                 break;
             case Label:
             case CheckBox:
@@ -704,14 +715,34 @@ public partial class Form1 : Form
     {
         foreach (ToolStripItem item in items)
         {
-            item.BackColor = UiWindowBack;
+            item.BackColor = UiChromeBack;
             item.ForeColor = UiText;
             if (item is ToolStripMenuItem menuItem)
             {
-                menuItem.DropDown.BackColor = UiWindowBack;
+                menuItem.DropDown.BackColor = UiChromeBack;
                 menuItem.DropDown.ForeColor = UiText;
                 ApplyThemeToToolStripItems(menuItem.DropDownItems);
             }
+        }
+    }
+
+    private static void ApplyNativeControlTheme(Control control)
+    {
+        if (!control.IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = NativeMethods.SetWindowTheme(
+                control.Handle,
+                UiWindowBack.GetBrightness() < 0.3F ? "DarkMode_Explorer" : "Explorer",
+                null);
+        }
+        catch
+        {
+            // Native control theming is best-effort.
         }
     }
 
@@ -1189,6 +1220,37 @@ public partial class Form1 : Form
         UpdateButtons();
     }
 
+    private void MacroListOnDrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+    {
+        using var back = new SolidBrush(UiPanelBack);
+        using var border = new Pen(UiBorder);
+        e.Graphics.FillRectangle(back, e.Bounds);
+        e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+        e.Graphics.DrawLine(border, e.Bounds.Right - 1, e.Bounds.Top + 4, e.Bounds.Right - 1, e.Bounds.Bottom - 5);
+
+        var textRect = new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height);
+        TextRenderer.DrawText(
+            e.Graphics,
+            e.Header?.Text ?? "",
+            _macroList.Font,
+            textRect,
+            UiText,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+    }
+
+    private void MacroListOnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        var selected = e.Item?.Selected ?? false;
+        using var back = new SolidBrush(selected ? UiSelectionBack : UiPanelBack);
+        e.Graphics.FillRectangle(back, e.Bounds);
+
+        var textColor = selected ? UiSelectionText : UiText;
+        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+        flags |= e.ColumnIndex >= 2 ? TextFormatFlags.Right : TextFormatFlags.Left;
+        var textRect = new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? "", _macroList.Font, textRect, textColor, flags);
+    }
+
     private void NameBoxOnTextChanged(object? sender, EventArgs e)
     {
         if (_updatingSelection)
@@ -1554,19 +1616,15 @@ public partial class Form1 : Form
         {
             e.Graphics.Clear(BackColor);
 
-            var borderRect = new Rectangle(0, 10, Width - 1, Height - 11);
+            var borderRect = new Rectangle(0, 0, Width - 1, Height - 1);
             using var borderPen = new Pen(UiBorder);
             e.Graphics.DrawRectangle(borderPen, borderRect);
 
-            var titleSize = TextRenderer.MeasureText(Text, Font);
-            var titleRect = new Rectangle(10, 0, titleSize.Width + 8, 20);
-            using var titleBack = new SolidBrush(BackColor);
-            e.Graphics.FillRectangle(titleBack, titleRect);
             TextRenderer.DrawText(
                 e.Graphics,
                 Text,
                 Font,
-                new Point(14, 2),
+                new Point(14, 6),
                 UiText,
                 TextFormatFlags.NoPadding);
         }
