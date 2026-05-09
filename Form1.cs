@@ -1,16 +1,25 @@
+using Microsoft.Win32;
+using System.Runtime.InteropServices;
+
 namespace AutomationTool;
 
 public partial class Form1 : Form
 {
     private const string UiFontName = "Yu Gothic UI";
-    private static readonly Color UiWindowBack = Color.FromArgb(245, 246, 248);
-    private static readonly Color UiPanelBack = Color.White;
-    private static readonly Color UiChromeBack = Color.FromArgb(238, 241, 245);
-    private static readonly Color UiBorder = Color.FromArgb(205, 211, 218);
-    private static readonly Color UiText = Color.FromArgb(32, 36, 42);
-    private static readonly Color UiMutedText = Color.FromArgb(82, 90, 102);
-    private static readonly Color UiPrimary = Color.FromArgb(37, 99, 235);
-    private static readonly Color UiDanger = Color.FromArgb(190, 48, 48);
+    private const int DwmUseImmersiveDarkMode = 20;
+    private static Color UiWindowBack = Color.FromArgb(245, 246, 248);
+    private static Color UiPanelBack = Color.White;
+    private static Color UiChromeBack = Color.FromArgb(238, 241, 245);
+    private static Color UiBorder = Color.FromArgb(205, 211, 218);
+    private static Color UiText = Color.FromArgb(32, 36, 42);
+    private static Color UiMutedText = Color.FromArgb(82, 90, 102);
+    private static Color UiPrimary = Color.FromArgb(37, 99, 235);
+    private static Color UiDanger = Color.FromArgb(190, 48, 48);
+    private static Color UiDangerBorder = Color.FromArgb(218, 168, 168);
+    private static Color UiHover = Color.FromArgb(248, 250, 252);
+    private static Color UiPressed = Color.FromArgb(229, 233, 238);
+    private static Color UiPrimaryHover = Color.FromArgb(29, 78, 216);
+    private static Color UiPrimaryPressed = Color.FromArgb(30, 64, 175);
 
     private readonly InputRecorder _recorder = new();
     private readonly MacroPlayer _player = new();
@@ -34,6 +43,10 @@ public partial class Form1 : Form
     private Button _previewButton = null!;
     private ListView _macroList = null!;
     private Label _summaryLabel = null!;
+    private MenuStrip _menu = null!;
+    private ToolStripMenuItem _systemThemeItem = null!;
+    private ToolStripMenuItem _lightThemeItem = null!;
+    private ToolStripMenuItem _darkThemeItem = null!;
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
@@ -54,6 +67,8 @@ public partial class Form1 : Form
     private SplitContainer _mainSplit = null!;
     private Control _advancedSettingsPanel = null!;
     private RowStyle _advancedSettingsRow = null!;
+    private AppThemeMode _themeMode;
+    private bool _darkThemeActive;
     private CancellationTokenSource? _countdownCts;
     private HotkeyGesture _emergencyStopHotkey = CreateDefaultEmergencyHotkey();
     private HotkeyGesture _recordingStopHotkey = CreateDefaultRecordingStopHotkey();
@@ -64,6 +79,8 @@ public partial class Form1 : Form
     public Form1()
     {
         InitializeComponent();
+        _themeMode = AppSettingsStore.Load().ThemeMode;
+        SystemEvents.UserPreferenceChanged += SystemEventsOnUserPreferenceChanged;
         BuildInterface();
         LoadDefaultMacros();
     }
@@ -75,6 +92,35 @@ public partial class Form1 : Form
         base.OnShown(e);
         AdjustSplitters();
         RefreshHotkeys();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyWindowDarkMode();
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        SystemEvents.UserPreferenceChanged -= SystemEventsOnUserPreferenceChanged;
+        base.OnFormClosed(e);
+    }
+
+    private void SystemEventsOnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (_themeMode != AppThemeMode.System || IsDisposed)
+        {
+            return;
+        }
+
+        if (IsHandleCreated)
+        {
+            BeginInvoke((Action)ApplyTheme);
+        }
+        else
+        {
+            ApplyTheme();
+        }
     }
 
     protected override void WndProc(ref Message m)
@@ -145,7 +191,7 @@ public partial class Form1 : Form
         Controls.Add(_emergencyOverlay);
         _emergencyOverlay.BringToFront();
 
-        var menu = new MenuStrip
+        _menu = new MenuStrip
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(6, 2, 0, 2),
@@ -156,9 +202,31 @@ public partial class Form1 : Form
         var fileMenu = new ToolStripMenuItem("ファイル");
         fileMenu.DropDownItems.Add("読込...", null, LoadButtonOnClick);
         fileMenu.DropDownItems.Add("出力...", null, SaveButtonOnClick);
-        menu.Items.Add(fileMenu);
-        MainMenuStrip = menu;
-        root.Controls.Add(menu, 0, 0);
+        var viewMenu = new ToolStripMenuItem("表示");
+        var themeMenu = new ToolStripMenuItem("テーマ");
+        _systemThemeItem = new ToolStripMenuItem("システム設定", null, (_, _) => SetThemeMode(AppThemeMode.System))
+        {
+            CheckOnClick = false
+        };
+        _lightThemeItem = new ToolStripMenuItem("ライト", null, (_, _) => SetThemeMode(AppThemeMode.Light))
+        {
+            CheckOnClick = false
+        };
+        _darkThemeItem = new ToolStripMenuItem("ダーク", null, (_, _) => SetThemeMode(AppThemeMode.Dark))
+        {
+            CheckOnClick = false
+        };
+        themeMenu.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _systemThemeItem,
+            _lightThemeItem,
+            _darkThemeItem
+        });
+        viewMenu.DropDownItems.Add(themeMenu);
+        _menu.Items.Add(fileMenu);
+        _menu.Items.Add(viewMenu);
+        MainMenuStrip = _menu;
+        root.Controls.Add(_menu, 0, 0);
 
         var topPanel = new FlowLayoutPanel
         {
@@ -230,7 +298,7 @@ public partial class Form1 : Form
             Padding = new Padding(10),
             BackColor = UiWindowBack
         };
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 206));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
@@ -253,8 +321,8 @@ public partial class Form1 : Form
         macroGroup.Controls.Add(new Label
         {
             Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
-            Location = new Point(12, 158),
-            Size = new Size(420, 20),
+            Location = new Point(12, 164),
+            Size = new Size(500, 24),
             ForeColor = UiMutedText,
             BackColor = Color.Transparent
         });
@@ -386,6 +454,7 @@ public partial class Form1 : Form
         statusStrip.Items.Add(_statusLabel);
         root.Controls.Add(statusStrip, 0, 3);
 
+        ApplyTheme();
         ToggleAdvancedSettings(false);
         UpdateButtons();
     }
@@ -414,6 +483,19 @@ public partial class Form1 : Form
 
     private static Button CreateButton(string text, EventHandler click, ButtonTone tone = ButtonTone.Normal)
     {
+        var button = new Button
+        {
+            Text = text,
+            Size = new Size(84, 26),
+            Margin = new Padding(0, 0, 10, 0)
+        };
+        StyleButton(button, tone);
+        button.Click += click;
+        return button;
+    }
+
+    private static void StyleButton(Button button, ButtonTone tone)
+    {
         var backColor = tone switch
         {
             ButtonTone.Primary => UiPrimary,
@@ -428,30 +510,22 @@ public partial class Form1 : Form
         var borderColor = tone switch
         {
             ButtonTone.Primary => UiPrimary,
-            ButtonTone.Danger => Color.FromArgb(218, 168, 168),
+            ButtonTone.Danger => UiDangerBorder,
             _ => UiBorder
         };
 
-        var button = new Button
-        {
-            Text = text,
-            Size = new Size(84, 26),
-            Margin = new Padding(0, 0, 10, 0),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = backColor,
-            ForeColor = foreColor,
-            UseVisualStyleBackColor = false
-        };
+        button.FlatStyle = FlatStyle.Flat;
+        button.BackColor = backColor;
+        button.ForeColor = foreColor;
+        button.UseVisualStyleBackColor = false;
         button.FlatAppearance.BorderColor = borderColor;
         button.FlatAppearance.BorderSize = 1;
         button.FlatAppearance.MouseOverBackColor = tone == ButtonTone.Primary
-            ? Color.FromArgb(29, 78, 216)
-            : Color.FromArgb(248, 250, 252);
+            ? UiPrimaryHover
+            : UiHover;
         button.FlatAppearance.MouseDownBackColor = tone == ButtonTone.Primary
-            ? Color.FromArgb(30, 64, 175)
-            : Color.FromArgb(229, 233, 238);
-        button.Click += click;
-        return button;
+            ? UiPrimaryPressed
+            : UiPressed;
     }
 
     private static GroupBox CreateGroup(string text)
@@ -502,6 +576,192 @@ public partial class Form1 : Form
             case NumericUpDown numericUpDown:
                 numericUpDown.BorderStyle = BorderStyle.FixedSingle;
                 break;
+        }
+    }
+
+    private void SetThemeMode(AppThemeMode themeMode)
+    {
+        _themeMode = themeMode;
+        AppSettingsStore.Save(new AppSettings { ThemeMode = _themeMode });
+        ApplyTheme();
+    }
+
+    private void ApplyTheme()
+    {
+        _darkThemeActive = _themeMode == AppThemeMode.Dark
+            || (_themeMode == AppThemeMode.System && IsSystemDarkTheme());
+        ApplyPalette(_darkThemeActive);
+        ApplyThemeToControl(this);
+        StyleButton(_recordButton, ButtonTone.Primary);
+        StyleButton(_stopButton, ButtonTone.Danger);
+        StyleButton(_playButton, ButtonTone.Normal);
+        StyleButton(_previewButton, ButtonTone.Normal);
+        StyleButton(_editButton, ButtonTone.Normal);
+        StyleButton(_deleteButton, ButtonTone.Danger);
+        UpdateThemeMenuChecks();
+        ApplyWindowDarkMode();
+        Invalidate(true);
+    }
+
+    private static void ApplyPalette(bool dark)
+    {
+        if (dark)
+        {
+            UiWindowBack = Color.FromArgb(24, 27, 32);
+            UiPanelBack = Color.FromArgb(34, 38, 45);
+            UiChromeBack = Color.FromArgb(29, 33, 39);
+            UiBorder = Color.FromArgb(69, 76, 86);
+            UiText = Color.FromArgb(235, 238, 242);
+            UiMutedText = Color.FromArgb(166, 174, 185);
+            UiPrimary = Color.FromArgb(59, 130, 246);
+            UiDanger = Color.FromArgb(248, 113, 113);
+            UiDangerBorder = Color.FromArgb(119, 65, 65);
+            UiHover = Color.FromArgb(43, 49, 58);
+            UiPressed = Color.FromArgb(51, 59, 70);
+            UiPrimaryHover = Color.FromArgb(37, 99, 235);
+            UiPrimaryPressed = Color.FromArgb(29, 78, 216);
+            return;
+        }
+
+        UiWindowBack = Color.FromArgb(245, 246, 248);
+        UiPanelBack = Color.White;
+        UiChromeBack = Color.FromArgb(238, 241, 245);
+        UiBorder = Color.FromArgb(205, 211, 218);
+        UiText = Color.FromArgb(32, 36, 42);
+        UiMutedText = Color.FromArgb(82, 90, 102);
+        UiPrimary = Color.FromArgb(37, 99, 235);
+        UiDanger = Color.FromArgb(190, 48, 48);
+        UiDangerBorder = Color.FromArgb(218, 168, 168);
+        UiHover = Color.FromArgb(248, 250, 252);
+        UiPressed = Color.FromArgb(229, 233, 238);
+        UiPrimaryHover = Color.FromArgb(29, 78, 216);
+        UiPrimaryPressed = Color.FromArgb(30, 64, 175);
+    }
+
+    private void ApplyThemeToControl(Control control)
+    {
+        if (control is EmergencyStopOverlay)
+        {
+            return;
+        }
+
+        switch (control)
+        {
+            case Form form:
+                form.BackColor = UiWindowBack;
+                form.ForeColor = UiText;
+                break;
+            case MenuStrip menuStrip:
+                menuStrip.BackColor = UiWindowBack;
+                menuStrip.ForeColor = UiText;
+                ApplyThemeToToolStripItems(menuStrip.Items);
+                break;
+            case StatusStrip statusStrip:
+                statusStrip.BackColor = UiWindowBack;
+                statusStrip.ForeColor = UiMutedText;
+                ApplyThemeToToolStripItems(statusStrip.Items);
+                break;
+            case ListView listView:
+                listView.BackColor = UiPanelBack;
+                listView.ForeColor = UiText;
+                break;
+            case SectionGroupBox groupBox:
+                groupBox.BackColor = UiPanelBack;
+                groupBox.ForeColor = UiText;
+                break;
+            case FlowLayoutPanel:
+                control.BackColor = UiChromeBack;
+                control.ForeColor = UiText;
+                break;
+            case SplitContainer splitContainer:
+                splitContainer.BackColor = UiBorder;
+                break;
+            case SplitterPanel:
+            case TableLayoutPanel:
+            case Panel:
+                control.BackColor = UiWindowBack;
+                control.ForeColor = UiText;
+                break;
+            case TextBox:
+            case ComboBox:
+            case NumericUpDown:
+                StyleInputControl(control);
+                break;
+            case Label:
+            case CheckBox:
+                control.BackColor = Color.Transparent;
+                control.ForeColor = UiMutedText;
+                break;
+        }
+
+        foreach (Control child in control.Controls)
+        {
+            ApplyThemeToControl(child);
+        }
+    }
+
+    private static void ApplyThemeToToolStripItems(ToolStripItemCollection items)
+    {
+        foreach (ToolStripItem item in items)
+        {
+            item.BackColor = UiWindowBack;
+            item.ForeColor = UiText;
+            if (item is ToolStripMenuItem menuItem)
+            {
+                menuItem.DropDown.BackColor = UiWindowBack;
+                menuItem.DropDown.ForeColor = UiText;
+                ApplyThemeToToolStripItems(menuItem.DropDownItems);
+            }
+        }
+    }
+
+    private void UpdateThemeMenuChecks()
+    {
+        if (_systemThemeItem is null)
+        {
+            return;
+        }
+
+        _systemThemeItem.Checked = _themeMode == AppThemeMode.System;
+        _lightThemeItem.Checked = _themeMode == AppThemeMode.Light;
+        _darkThemeItem.Checked = _themeMode == AppThemeMode.Dark;
+    }
+
+    private void ApplyWindowDarkMode()
+    {
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            var enabled = _darkThemeActive ? 1 : 0;
+            _ = NativeMethods.DwmSetWindowAttribute(
+                Handle,
+                DwmUseImmersiveDarkMode,
+                ref enabled,
+                Marshal.SizeOf<int>());
+        }
+        catch
+        {
+            // Title bar theming is best-effort on older Windows builds.
+        }
+    }
+
+    private static bool IsSystemDarkTheme()
+    {
+        try
+        {
+            var value = Registry.GetValue(
+                @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "AppsUseLightTheme",
+                1);
+            return value is int intValue && intValue == 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 
