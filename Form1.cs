@@ -180,19 +180,22 @@ public partial class Form1 : Form
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
         _mainSplit.Panel1.Controls.Add(_macroList);
 
+        _mainSplit.Panel2.AutoScroll = true;
         var rightPanel = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             RowCount = 5,
             Padding = new Padding(8)
         };
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
         rightPanel.RowStyles.Add(_advancedSettingsRow);
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
         _mainSplit.Panel2.Controls.Add(rightPanel);
 
         var macroGroup = CreateGroup("マクロ");
@@ -395,7 +398,7 @@ public partial class Form1 : Form
         }
 
         _advancedSettingsPanel.Visible = visible;
-        _advancedSettingsRow.Height = visible ? 236 : 0;
+        _advancedSettingsRow.Height = visible ? 260 : 0;
         _advancedSettingsPanel.Parent?.PerformLayout();
     }
 
