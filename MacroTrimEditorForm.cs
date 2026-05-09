@@ -610,10 +610,29 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
-        using var selector = new StartPointSelectionOverlayForm(_events, new Point(firstDrawable.X, firstDrawable.Y));
-        if (selector.ShowDialog(this) == DialogResult.OK)
+        var previousState = WindowState;
+        Point? selectedStart = null;
+        var result = DialogResult.Cancel;
+        WindowState = FormWindowState.Minimized;
+        try
         {
-            ApplyStartPoint(selector.SelectedStartPoint);
+            using var selector = new StartPointSelectionOverlayForm(_events, new Point(firstDrawable.X, firstDrawable.Y));
+            result = selector.ShowDialog();
+            if (result == DialogResult.OK)
+            {
+                selectedStart = selector.SelectedStartPoint;
+            }
+        }
+        finally
+        {
+            WindowState = previousState == FormWindowState.Minimized ? FormWindowState.Normal : previousState;
+            Show();
+            Activate();
+        }
+
+        if (result == DialogResult.OK && selectedStart is not null)
+        {
+            ApplyStartPoint(selectedStart.Value);
         }
     }
 

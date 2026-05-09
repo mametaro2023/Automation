@@ -35,7 +35,7 @@ public sealed class HotkeyManager : IDisposable
         }
 
         var id = FirstMacroId;
-        foreach (var macro in macros.Where(m => !m.Hotkey.IsEmpty))
+        foreach (var macro in macros.Where(m => m.IsEnabled && !m.Hotkey.IsEmpty))
         {
             Register(windowHandle, id, macro.Hotkey);
             _registeredMacros[id] = macro.Id;
