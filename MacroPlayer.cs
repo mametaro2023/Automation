@@ -217,7 +217,7 @@ public sealed class MacroPlayer : IDisposable
 
     private List<TimedMacroEvent> BuildTimedEvents(Macro macro, NoiseSettings noise, int speedPercent)
     {
-        var speed = Math.Clamp(speedPercent, 10, 500) / 100.0;
+        var speed = Math.Clamp(speedPercent, 10, 2000) / 100.0;
         var fixedIntervalMode = macro.Recording?.TimingMode == RecordingTimingMode.FixedEventInterval;
         var events = fixedIntervalMode
             ? MacroTimingNormalizer.NormalizeFixedEventIntervals(

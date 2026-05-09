@@ -45,6 +45,7 @@ public sealed class Macro
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "New Macro";
     public bool IsEnabled { get; set; } = true;
+    public int PlaybackSpeedPercent { get; set; } = 100;
     public HotkeyGesture Hotkey { get; set; } = new();
     public RecordingOptions Recording { get; set; } = RecordingOptions.Standard();
     public NoiseSettings Noise { get; set; } = new();

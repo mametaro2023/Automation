@@ -53,7 +53,6 @@ public partial class Form1 : Form
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
     private TextBox _recordingStopHotkeyBox = null!;
-    private CheckBox _macroEnabledBox = null!;
     private ComboBox _recordingModeBox = null!;
     private ComboBox _densityBox = null!;
     private NumericUpDown _eventIntervalBox = null!;
@@ -307,10 +306,13 @@ public partial class Form1 : Form
         _macroList.DrawSubItem += MacroListOnDrawSubItem;
         _macroList.Resize += (_, _) => UpdateMacroListColumnWidths();
         _macroList.ColumnWidthChanging += MacroListOnColumnWidthChanging;
+        _macroList.MouseClick += MacroListOnMouseClick;
+        _macroList.KeyDown += MacroListOnKeyDown;
         _macroList.Columns.Add("名前", 150);
         _macroList.Columns.Add("ショートカット", 100);
         _macroList.Columns.Add("件数", 45);
         _macroList.Columns.Add("時間", 88);
+        _macroList.Columns.Add("有効", 50);
         UpdateMacroListColumnWidths();
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
         _mainSplit.Panel1.Controls.Add(_macroList);
@@ -346,19 +348,10 @@ public partial class Form1 : Form
         AddLabeledControl(macroGroup, "記録停止", _recordingStopHotkeyBox = new TextBox { ReadOnly = true }, 126, 105);
         _recordingStopHotkeyBox.Text = _recordingStopHotkey.ToString();
         _recordingStopHotkeyBox.KeyDown += RecordingStopHotkeyBoxOnKeyDown;
-        _macroEnabledBox = new CheckBox
-        {
-            Text = "有効",
-            AutoSize = true,
-            Location = new Point(123, 160),
-            Checked = true
-        };
-        _macroEnabledBox.CheckedChanged += MacroEnabledBoxOnCheckedChanged;
-        macroGroup.Controls.Add(_macroEnabledBox);
         macroGroup.Controls.Add(new Label
         {
             Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
-            Location = new Point(12, 190),
+            Location = new Point(12, 166),
             Size = new Size(500, 24),
             ForeColor = UiMutedText,
             BackColor = Color.Transparent
@@ -390,10 +383,11 @@ public partial class Form1 : Form
         AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 10,
-            Maximum = 500,
+            Maximum = 2000,
             Increment = 10,
             Value = 100
         }, 104, 118);
+        _playbackSpeedBox.ValueChanged += PlaybackSpeedBoxOnValueChanged;
 
         var advancedToggle = new CheckBox
         {
@@ -881,7 +875,6 @@ public partial class Form1 : Form
     {
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
         _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
-        _toolTip.SetToolTip(_macroEnabledBox, "オフにすると、このマクロのショートカットキー登録を停止します。手動の編集やプレビューは可能です。");
         _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
         _toolTip.SetToolTip(_recordingStopHotkeyBox, "記録中だけ使う停止キーです。停止キー自体は記録データから除外します。Backspace/Deleteで既定値に戻します。");
         _toolTip.SetToolTip(_recordingModeBox, "完全記録は操作時刻をそのまま残します。イベント間隔一定はクリックやキー入力の間隔を指定msへ整えます。");
@@ -889,7 +882,7 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_eventIntervalBox, "イベント間隔一定で使う基準間隔です。押下/解放ペア以外の次イベントまでの時間になります。");
         _toolTip.SetToolTip(_holdDurationBox, "イベント間隔一定で使う押下から解放までの時間です。クリックやキー押下の長さを決めます。");
         _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
-        _toolTip.SetToolTip(_playbackSpeedBox, "再生全体の速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
+        _toolTip.SetToolTip(_playbackSpeedBox, "選択中マクロの再生速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
         _toolTip.SetToolTip(_coordNoiseBox, "クリック押下/解放の座標に加える小さな揺れです。重要点なので大きくしすぎないでください。");
         _toolTip.SetToolTip(_timeNoiseBox, "クリックやキー入力の間隔に加える時間揺れです。機械的な一定間隔を避けます。");
         _toolTip.SetToolTip(_trajectoryNoiseBox, "クリック以外のマウス軌道に加える曲がり具合です。大きいほど毎回違う軌道になります。");
@@ -1250,6 +1243,7 @@ public partial class Form1 : Form
                     Name = string.IsNullOrWhiteSpace(_nameBox.Text)
                         ? $"マクロ {DateTime.Now:yyyyMMdd HHmmss}"
                         : _nameBox.Text.Trim(),
+                    PlaybackSpeedPercent = (int)_playbackSpeedBox.Value,
                     Recording = options,
                     Noise = noise,
                     Events = events
@@ -1379,7 +1373,7 @@ public partial class Form1 : Form
             await _player.PlayAsync(
                 macro,
                 noise,
-                (int)_playbackSpeedBox.Value,
+                macro.PlaybackSpeedPercent,
                 Screen.FromControl(this),
                 SetStatus);
         }
@@ -1395,8 +1389,10 @@ public partial class Form1 : Form
         _updatingSelection = true;
         _nameBox.Text = macro?.Name ?? "";
         _hotkeyBox.Text = macro?.Hotkey.ToString() ?? "";
-        _macroEnabledBox.Checked = macro?.IsEnabled ?? true;
-        _macroEnabledBox.Enabled = macro is not null;
+        _playbackSpeedBox.Value = Math.Clamp(
+            macro?.PlaybackSpeedPercent ?? 100,
+            (int)_playbackSpeedBox.Minimum,
+            (int)_playbackSpeedBox.Maximum);
         SetRecordingControls(macro?.Recording ?? RecordingOptions.Standard());
         SetNoiseControls(macro?.Noise ?? new NoiseSettings());
         _updatingSelection = false;
@@ -1425,15 +1421,53 @@ public partial class Form1 : Form
     private void MacroListOnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
     {
         var selected = e.Item?.Selected ?? false;
-        var enabled = (e.Item?.Tag as Macro)?.IsEnabled ?? true;
+        var macro = e.Item?.Tag as Macro;
+        var enabled = macro?.IsEnabled ?? true;
         using var back = new SolidBrush(selected ? UiSelectionBack : UiPanelBack);
         e.Graphics.FillRectangle(back, e.Bounds);
+
+        if (e.ColumnIndex == 4)
+        {
+            DrawMacroEnabledCheck(e.Graphics, e.Bounds, selected, enabled);
+            return;
+        }
 
         var textColor = selected ? UiSelectionText : enabled ? UiText : UiMutedText;
         var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
         flags |= e.ColumnIndex >= 2 ? TextFormatFlags.Right : TextFormatFlags.Left;
         var textRect = new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height);
         TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? "", _macroList.Font, textRect, textColor, flags);
+    }
+
+    private void DrawMacroEnabledCheck(Graphics graphics, Rectangle bounds, bool selected, bool enabled)
+    {
+        var boxSize = 14;
+        var box = new Rectangle(
+            bounds.Left + (bounds.Width - boxSize) / 2,
+            bounds.Top + (bounds.Height - boxSize) / 2,
+            boxSize,
+            boxSize);
+        using var border = new Pen(enabled ? UiPrimary : UiBorder);
+        using var fill = new SolidBrush(enabled ? UiPrimary : selected ? UiSelectionBack : UiPanelBack);
+        graphics.FillRectangle(fill, box);
+        graphics.DrawRectangle(border, box);
+
+        if (!enabled)
+        {
+            return;
+        }
+
+        using var check = new Pen(Color.White, 2F)
+        {
+            StartCap = System.Drawing.Drawing2D.LineCap.Round,
+            EndCap = System.Drawing.Drawing2D.LineCap.Round
+        };
+        graphics.DrawLines(check, new[]
+        {
+            new Point(box.Left + 3, box.Top + 7),
+            new Point(box.Left + 6, box.Top + 10),
+            new Point(box.Right - 3, box.Top + 4)
+        });
     }
 
     private void MacroListOnColumnWidthChanging(object? sender, ColumnWidthChangingEventArgs e)
@@ -1451,7 +1485,7 @@ public partial class Form1 : Form
 
     private void UpdateMacroListColumnWidths()
     {
-        if (_macroList is null || _macroList.Columns.Count < 4)
+        if (_macroList is null || _macroList.Columns.Count < 5)
         {
             return;
         }
@@ -1459,9 +1493,10 @@ public partial class Form1 : Form
         const int nameWidth = 150;
         const int shortcutWidth = 100;
         const int countWidth = 45;
+        const int enabledWidth = 50;
         var timeWidth = Math.Max(
             88,
-            _macroList.ClientSize.Width - nameWidth - shortcutWidth - countWidth - 1);
+            _macroList.ClientSize.Width - nameWidth - shortcutWidth - countWidth - enabledWidth - 1);
 
         _updatingMacroListColumns = true;
         try
@@ -1471,6 +1506,7 @@ public partial class Form1 : Form
             _macroList.Columns[1].Width = shortcutWidth;
             _macroList.Columns[2].Width = countWidth;
             _macroList.Columns[3].Width = timeWidth;
+            _macroList.Columns[4].Width = enabledWidth;
             _macroList.EndUpdate();
         }
         finally
@@ -1497,7 +1533,44 @@ public partial class Form1 : Form
         AutoSaveMacros();
     }
 
-    private void MacroEnabledBoxOnCheckedChanged(object? sender, EventArgs e)
+    private void MacroListOnMouseClick(object? sender, MouseEventArgs e)
+    {
+        var hit = _macroList.HitTest(e.Location);
+        if (hit.Item?.Tag is not Macro macro || hit.Item.SubItems.IndexOf(hit.SubItem) != 4)
+        {
+            return;
+        }
+
+        ToggleMacroEnabled(macro);
+    }
+
+    private void MacroListOnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Space)
+        {
+            return;
+        }
+
+        var macro = GetSelectedMacro();
+        if (macro is null)
+        {
+            return;
+        }
+
+        e.SuppressKeyPress = true;
+        ToggleMacroEnabled(macro);
+    }
+
+    private void ToggleMacroEnabled(Macro macro)
+    {
+        macro.IsEnabled = !macro.IsEnabled;
+        RefreshMacroList(macro.Id);
+        RefreshSummary(macro);
+        RefreshHotkeys();
+        AutoSaveMacros();
+    }
+
+    private void PlaybackSpeedBoxOnValueChanged(object? sender, EventArgs e)
     {
         if (_updatingSelection)
         {
@@ -1510,9 +1583,8 @@ public partial class Form1 : Form
             return;
         }
 
-        macro.IsEnabled = _macroEnabledBox.Checked;
-        RefreshMacroList(macro.Id);
-        RefreshHotkeys();
+        macro.PlaybackSpeedPercent = (int)_playbackSpeedBox.Value;
+        RefreshSummary(macro);
         AutoSaveMacros();
     }
 
@@ -1784,6 +1856,7 @@ public partial class Form1 : Form
             item.SubItems.Add(macro.Hotkey.ToString());
             item.SubItems.Add(macro.Events.Count.ToString());
             item.SubItems.Add($"{macro.DurationMs} ms");
+            item.SubItems.Add(macro.IsEnabled ? "有効" : "無効");
             item.Tag = macro;
             _macroList.Items.Add(item);
             if (selectedId == macro.Id)
@@ -1804,7 +1877,7 @@ public partial class Form1 : Form
     {
         if (macro is null)
         {
-            _summaryLabel.Text = "記録データの詳細は表示しません。\r\nプレビューで軌跡を確認できます。";
+            _summaryLabel.Text = "マクロが選択されていません。";
             return;
         }
 
@@ -1813,9 +1886,8 @@ public partial class Form1 : Form
             $"状態: {(macro.IsEnabled ? "有効" : "無効")}\r\n" +
             $"イベント数: {macro.Events.Count}\r\n" +
             $"時間: {macro.DurationMs} ms\r\n" +
-            $"記録方法: {GetRecordingModeText(macro.Recording)}\r\n\r\n" +
-            "記録データの詳細は表示しません。\r\n" +
-            "プレビューでは赤=完全再現、黄=ノイズ入りを描画します。";
+            $"再生速度: {macro.PlaybackSpeedPercent}%\r\n" +
+            $"記録方法: {GetRecordingModeText(macro.Recording)}";
     }
 
     private static string GetRecordingModeText(RecordingOptions recording)
