@@ -8,6 +8,7 @@ namespace AutomationTool;
 public sealed class MacroPlayer : IDisposable
 {
     private const int StationaryRadiusPx = 2;
+    private const int ClickPairReuseRadiusPx = 2;
     private const double StationaryMinDurationMs = 10.0;
     private const int StationaryMinSamples = 3;
 
@@ -68,6 +69,7 @@ public sealed class MacroPlayer : IDisposable
         var currentRecordedPosition = currentPosition;
         var currentTimeMs = 0.0;
         var pressedPositions = new Dictionary<RecordedMouseButton, Point>();
+        var pressedRecordedPositions = new Dictionary<RecordedMouseButton, Point>();
         var movedWhilePressed = new HashSet<RecordedMouseButton>();
         var plannedEventPoints = new Dictionary<MacroEvent, Point>();
 
@@ -100,6 +102,7 @@ public sealed class MacroPlayer : IDisposable
                             currentPosition,
                             moveSegment.IsStationary,
                             pressedPositions,
+                            pressedRecordedPositions,
                             movedWhilePressed,
                             noise,
                             plannedEventPoints)
@@ -147,11 +150,14 @@ public sealed class MacroPlayer : IDisposable
                     currentPosition = downPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
                     pressedPositions[macroEvent.Button] = downPoint;
+                    pressedRecordedPositions[macroEvent.Button] = currentRecordedPosition;
                     movedWhilePressed.Remove(macroEvent.Button);
                     break;
                 case MacroEventKind.MouseUp:
                     Point upPoint;
                     if (pressedPositions.TryGetValue(macroEvent.Button, out var downPosition)
+                        && pressedRecordedPositions.TryGetValue(macroEvent.Button, out var recordedDownPosition)
+                        && IsSameClickPoint(recordedDownPosition, macroEvent)
                         && !movedWhilePressed.Contains(macroEvent.Button))
                     {
                         upPoint = downPosition;
@@ -172,6 +178,7 @@ public sealed class MacroPlayer : IDisposable
                     currentPosition = upPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
                     pressedPositions.Remove(macroEvent.Button);
+                    pressedRecordedPositions.Remove(macroEvent.Button);
                     movedWhilePressed.Remove(macroEvent.Button);
                     break;
                 case MacroEventKind.MouseWheel:
@@ -373,6 +380,7 @@ public sealed class MacroPlayer : IDisposable
         Point currentPosition,
         bool stationaryRun,
         IReadOnlyDictionary<RecordedMouseButton, Point> pressedPositions,
+        IReadOnlyDictionary<RecordedMouseButton, Point> pressedRecordedPositions,
         IReadOnlySet<RecordedMouseButton> movedWhilePressed,
         NoiseSettings noise,
         Dictionary<MacroEvent, Point> plannedEventPoints)
@@ -394,6 +402,8 @@ public sealed class MacroPlayer : IDisposable
         if (nextEvent.Kind == MacroEventKind.MouseUp)
         {
             if (pressedPositions.TryGetValue(nextEvent.Button, out var downPosition)
+                && pressedRecordedPositions.TryGetValue(nextEvent.Button, out var recordedDownPosition)
+                && IsSameClickPoint(recordedDownPosition, nextEvent)
                 && (stationaryRun || !movedWhilePressed.Contains(nextEvent.Button)))
             {
                 plannedEventPoints[nextEvent] = downPosition;
@@ -406,6 +416,13 @@ public sealed class MacroPlayer : IDisposable
         }
 
         return null;
+    }
+
+    private static bool IsSameClickPoint(Point recordedDownPosition, MacroEvent upEvent)
+    {
+        var dx = recordedDownPosition.X - upEvent.X;
+        var dy = recordedDownPosition.Y - upEvent.Y;
+        return dx * dx + dy * dy <= ClickPairReuseRadiusPx * ClickPairReuseRadiusPx;
     }
 
     private static void AddMouseMoveAction(List<PlaybackAction> actions, double timeMs, Point point)
