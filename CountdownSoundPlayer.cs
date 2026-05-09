@@ -4,67 +4,74 @@ namespace AutomationTool;
 
 public sealed class CountdownSoundPlayer
 {
-    private readonly Random _random = new();
+    private const int SampleRate = 44100;
+    private const short BitsPerSample = 16;
+    private const short ChannelCount = 1;
+    private const double Volume = 0.28;
+
+    private readonly byte[] _tickSound = CreateSineWaveWav(frequencyHz: 880, durationMs: 80);
+    private readonly byte[] _startSound = CreateSineWaveWav(frequencyHz: 1320, durationMs: 120);
 
     public void PlayTick()
     {
-        PlayRandom("count.wav", "keyboard_on-*.wav");
+        Play(_tickSound);
     }
 
     public void PlayStart()
     {
-        PlayRandom("click_on-*.wav");
+        Play(_startSound);
     }
 
-    private void PlayRandom(params string[] patterns)
+    private static void Play(byte[] wavBytes)
     {
-        var files = FindSoundFiles(patterns);
-        if (files.Count == 0)
+        _ = Task.Run(() =>
         {
-            SystemSounds.Beep.Play();
-            return;
-        }
-
-        try
-        {
-            var path = files[_random.Next(files.Count)];
-            _ = Task.Run(() =>
+            try
             {
-                using var player = new SoundPlayer(path);
+                using var stream = new MemoryStream(wavBytes, writable: false);
+                using var player = new SoundPlayer(stream);
                 player.PlaySync();
-            });
-        }
-        catch
-        {
-            SystemSounds.Beep.Play();
-        }
+            }
+            catch
+            {
+                // Countdown sound is non-critical; avoid surfacing audio device errors.
+            }
+        });
     }
 
-    private static List<string> FindSoundFiles(IReadOnlyList<string> patterns)
+    private static byte[] CreateSineWaveWav(int frequencyHz, int durationMs)
     {
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "sounds"),
-            Path.Combine(Environment.CurrentDirectory, "sounds")
-        };
+        var sampleCount = Math.Max(1, SampleRate * durationMs / 1000);
+        var bytesPerSample = BitsPerSample / 8;
+        var dataSize = sampleCount * ChannelCount * bytesPerSample;
+        using var stream = new MemoryStream(44 + dataSize);
+        using var writer = new BinaryWriter(stream);
 
-        foreach (var directory in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        writer.Write("RIFF"u8);
+        writer.Write(36 + dataSize);
+        writer.Write("WAVE"u8);
+        writer.Write("fmt "u8);
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write(ChannelCount);
+        writer.Write(SampleRate);
+        writer.Write(SampleRate * ChannelCount * bytesPerSample);
+        writer.Write((short)(ChannelCount * bytesPerSample));
+        writer.Write(BitsPerSample);
+        writer.Write("data"u8);
+        writer.Write(dataSize);
+
+        var fadeSamples = Math.Min(sampleCount / 2, SampleRate * 8 / 1000);
+        for (var i = 0; i < sampleCount; i++)
         {
-            if (Directory.Exists(directory))
-            {
-                foreach (var pattern in patterns)
-                {
-                    var files = Directory.GetFiles(directory, pattern)
-                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
-                    if (files.Count > 0)
-                    {
-                        return files;
-                    }
-                }
-            }
+            var fadeIn = fadeSamples == 0 ? 1.0 : Math.Min(1.0, i / (double)fadeSamples);
+            var fadeOut = fadeSamples == 0 ? 1.0 : Math.Min(1.0, (sampleCount - 1 - i) / (double)fadeSamples);
+            var envelope = Math.Min(fadeIn, fadeOut);
+            var angle = 2.0 * Math.PI * frequencyHz * i / SampleRate;
+            var sample = (short)Math.Round(Math.Sin(angle) * short.MaxValue * Volume * envelope);
+            writer.Write(sample);
         }
 
-        return new List<string>();
+        return stream.ToArray();
     }
 }
