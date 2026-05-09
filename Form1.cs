@@ -1676,6 +1676,17 @@ public partial class Form1 : Form
 
     private sealed class ScrollFriendlyNumericUpDown : NumericUpDown
     {
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == NativeMethods.WM_MOUSEWHEEL)
+            {
+                ScrollNearestParent(this, GetWheelDelta(m.WParam));
+                return;
+            }
+
+            base.WndProc(ref m);
+        }
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             ScrollNearestParent(this, e.Delta);
@@ -1684,6 +1695,17 @@ public partial class Form1 : Form
 
     private sealed class ScrollFriendlyComboBox : ComboBox
     {
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == NativeMethods.WM_MOUSEWHEEL && !DroppedDown)
+            {
+                ScrollNearestParent(this, GetWheelDelta(m.WParam));
+                return;
+            }
+
+            base.WndProc(ref m);
+        }
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             if (DroppedDown)
@@ -1694,6 +1716,11 @@ public partial class Form1 : Form
 
             ScrollNearestParent(this, e.Delta);
         }
+    }
+
+    private static int GetWheelDelta(IntPtr wParam)
+    {
+        return unchecked((short)(((long)wParam >> 16) & 0xFFFF));
     }
 
     private static void ScrollNearestParent(Control source, int delta)
