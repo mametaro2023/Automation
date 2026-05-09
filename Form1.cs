@@ -342,12 +342,18 @@ public partial class Form1 : Form
         _nameBox.TextChanged += NameBoxOnTextChanged;
         AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58, 105);
         _hotkeyBox.KeyDown += HotkeyBoxOnKeyDown;
+        _hotkeyBox.Enter += HotkeyInputOnEnter;
+        _hotkeyBox.Leave += HotkeyInputOnLeave;
         AddLabeledControl(macroGroup, "緊急停止", _emergencyHotkeyBox = new TextBox { ReadOnly = true }, 92, 105);
         _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
         _emergencyHotkeyBox.KeyDown += EmergencyHotkeyBoxOnKeyDown;
+        _emergencyHotkeyBox.Enter += HotkeyInputOnEnter;
+        _emergencyHotkeyBox.Leave += HotkeyInputOnLeave;
         AddLabeledControl(macroGroup, "記録停止", _recordingStopHotkeyBox = new TextBox { ReadOnly = true }, 126, 105);
         _recordingStopHotkeyBox.Text = _recordingStopHotkey.ToString();
         _recordingStopHotkeyBox.KeyDown += RecordingStopHotkeyBoxOnKeyDown;
+        _recordingStopHotkeyBox.Enter += HotkeyInputOnEnter;
+        _recordingStopHotkeyBox.Leave += HotkeyInputOnLeave;
         macroGroup.Controls.Add(new Label
         {
             Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
@@ -1623,6 +1629,16 @@ public partial class Form1 : Form
         AutoSaveMacros();
     }
 
+    private void HotkeyInputOnEnter(object? sender, EventArgs e)
+    {
+        _hotkeys.UnregisterAll();
+    }
+
+    private void HotkeyInputOnLeave(object? sender, EventArgs e)
+    {
+        RefreshHotkeys();
+    }
+
     private void EmergencyHotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
     {
         e.SuppressKeyPress = true;
@@ -1904,6 +1920,12 @@ public partial class Form1 : Form
             return;
         }
 
+        if (IsHotkeyInputFocused())
+        {
+            _hotkeys.UnregisterAll();
+            return;
+        }
+
         try
         {
             _hotkeys.RegisterAll(Handle, _macros, _emergencyStopHotkey, _recordingStopHotkey);
@@ -1912,6 +1934,13 @@ public partial class Form1 : Form
         {
             SetStatus(ex.Message);
         }
+    }
+
+    private bool IsHotkeyInputFocused()
+    {
+        return _hotkeyBox.Focused
+            || _emergencyHotkeyBox.Focused
+            || _recordingStopHotkeyBox.Focused;
     }
 
     private void UpdateButtons()
