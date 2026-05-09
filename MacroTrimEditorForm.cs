@@ -611,9 +611,16 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         var previousState = WindowState;
+        var ownerForm = Owner as Form;
+        var ownerPreviousState = ownerForm?.WindowState;
         Point? selectedStart = null;
         var result = DialogResult.Cancel;
         WindowState = FormWindowState.Minimized;
+        if (ownerForm is not null)
+        {
+            ownerForm.WindowState = FormWindowState.Minimized;
+        }
+
         try
         {
             using var selector = new StartPointSelectionOverlayForm(_events, new Point(firstDrawable.X, firstDrawable.Y));
@@ -625,8 +632,17 @@ public sealed class MacroTrimEditorForm : Form
         }
         finally
         {
+            if (ownerForm is not null)
+            {
+                ownerForm.WindowState = ownerPreviousState == FormWindowState.Minimized
+                    ? FormWindowState.Normal
+                    : ownerPreviousState!.Value;
+                ownerForm.Show();
+            }
+
             WindowState = previousState == FormWindowState.Minimized ? FormWindowState.Normal : previousState;
             Show();
+            ownerForm?.Activate();
             Activate();
         }
 

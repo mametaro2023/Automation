@@ -71,6 +71,8 @@ public partial class Form1 : Form
     private Control _advancedSettingsPanel = null!;
     private RowStyle _advancedSettingsRow = null!;
     private RecordingStatusOverlayForm? _recordingOverlay;
+    private AppSettings _settings = new();
+    private string _macroStorePath = MacroStore.DefaultPath;
     private AppThemeMode _themeMode;
     private bool _darkThemeActive;
     private CancellationTokenSource? _countdownCts;
@@ -90,7 +92,9 @@ public partial class Form1 : Form
     public Form1()
     {
         InitializeComponent();
-        _themeMode = AppSettingsStore.Load().ThemeMode;
+        _settings = AppSettingsStore.Load();
+        _themeMode = _settings.ThemeMode;
+        _macroStorePath = ResolveMacroStorePath(_settings.MacroFilePath);
         ApplyProcessDarkMode(IsThemeModeDark(_themeMode));
         SystemEvents.UserPreferenceChanged += SystemEventsOnUserPreferenceChanged;
         BuildInterface();
@@ -216,6 +220,9 @@ public partial class Form1 : Form
         var fileMenu = new ToolStripMenuItem("ファイル");
         fileMenu.DropDownItems.Add("読込...", null, LoadButtonOnClick);
         fileMenu.DropDownItems.Add("出力...", null, SaveButtonOnClick);
+        fileMenu.DropDownItems.Add(new ToolStripSeparator());
+        fileMenu.DropDownItems.Add("保存場所を表示", null, ShowMacroStorageLocationOnClick);
+        fileMenu.DropDownItems.Add("保存場所を変更...", null, ChangeMacroStorageLocationOnClick);
         var viewMenu = new ToolStripMenuItem("表示");
         var themeMenu = new ToolStripMenuItem("テーマ");
         _systemThemeItem = new ToolStripMenuItem("システム設定", null, (_, _) => SetThemeMode(AppThemeMode.System))
@@ -612,7 +619,8 @@ public partial class Form1 : Form
     private void SetThemeMode(AppThemeMode themeMode)
     {
         _themeMode = themeMode;
-        AppSettingsStore.Save(new AppSettings { ThemeMode = _themeMode });
+        _settings.ThemeMode = _themeMode;
+        AppSettingsStore.Save(_settings);
         ApplyTheme();
     }
 
@@ -1126,6 +1134,94 @@ public partial class Form1 : Form
         SetStatus($"読み込みました: {dialog.FileName}");
     }
 
+    private void ShowMacroStorageLocationOnClick(object? sender, EventArgs e)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(_macroStorePath) ?? MacroStore.DefaultDirectory;
+            Directory.CreateDirectory(directory);
+            var argument = File.Exists(_macroStorePath)
+                ? $"/select,\"{_macroStorePath}\""
+                : $"\"{directory}\"";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = argument,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"保存場所を開けません: {ex.Message}");
+        }
+    }
+
+    private void ChangeMacroStorageLocationOnClick(object? sender, EventArgs e)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "マクロファイル (*.json)|*.json|すべてのファイル (*.*)|*.*",
+            DefaultExt = "json",
+            FileName = Path.GetFileName(_macroStorePath),
+            InitialDirectory = Path.GetDirectoryName(_macroStorePath)
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var selectedPath = Path.GetFullPath(dialog.FileName);
+        if (string.Equals(selectedPath, _macroStorePath, StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus($"現在の保存場所: {_macroStorePath}");
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(selectedPath))
+            {
+                var result = MessageBox.Show(
+                    this,
+                    "選択したファイルは既に存在します。\r\n\r\nはい: そのファイルを読み込んで保存場所にする\r\nいいえ: 現在のマクロをそのファイルへ保存して保存場所にする",
+                    "マクロ保存場所の変更",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button1);
+                if (result == DialogResult.Cancel)
+                {
+                    return;
+                }
+
+                if (result == DialogResult.Yes)
+                {
+                    var loaded = MacroStore.Load(selectedPath);
+                    SetMacroStorePath(selectedPath);
+                    _macros.Clear();
+                    _macros.AddRange(loaded);
+                    RefreshMacroList();
+                    RefreshHotkeys();
+                    SetStatus($"保存場所を変更し、読み込みました: {_macroStorePath}");
+                    return;
+                }
+
+                SetMacroStorePath(selectedPath);
+                MacroStore.Save(_macroStorePath, _macros);
+                SetStatus($"保存場所を変更し、現在のマクロを保存しました: {_macroStorePath}");
+                return;
+            }
+
+            SetMacroStorePath(selectedPath);
+            MacroStore.Save(_macroStorePath, _macros);
+            SetStatus($"保存場所を変更しました: {_macroStorePath}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"保存場所の変更に失敗: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "保存場所の変更", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void StopCurrentWork()
     {
         if (_countdownCts is not null)
@@ -1516,9 +1612,13 @@ public partial class Form1 : Form
         try
         {
             _macros.Clear();
-            _macros.AddRange(MacroStore.LoadDefault());
+            if (File.Exists(_macroStorePath))
+            {
+                _macros.AddRange(MacroStore.Load(_macroStorePath));
+            }
+
             RefreshMacroList();
-            SetStatus($"自動読み込み: {_macros.Count} 件");
+            SetStatus($"自動読み込み: {_macros.Count} 件 / {_macroStorePath}");
         }
         catch (Exception ex)
         {
@@ -1530,12 +1630,44 @@ public partial class Form1 : Form
     {
         try
         {
-            MacroStore.SaveDefault(_macros);
+            MacroStore.Save(_macroStorePath, _macros);
         }
         catch (Exception ex)
         {
             SetStatus($"自動保存失敗: {ex.Message}");
         }
+    }
+
+    private void SetMacroStorePath(string path)
+    {
+        _macroStorePath = Path.GetFullPath(path);
+        _settings.MacroFilePath = IsDefaultMacroStorePath(_macroStorePath) ? null : _macroStorePath;
+        AppSettingsStore.Save(_settings);
+    }
+
+    private static string ResolveMacroStorePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return MacroStore.DefaultPath;
+        }
+
+        try
+        {
+            return Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+        }
+        catch
+        {
+            return MacroStore.DefaultPath;
+        }
+    }
+
+    private static bool IsDefaultMacroStorePath(string path)
+    {
+        return string.Equals(
+            Path.GetFullPath(path),
+            Path.GetFullPath(MacroStore.DefaultPath),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private RecordingOptions GetRecordingOptions()

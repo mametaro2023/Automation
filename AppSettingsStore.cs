@@ -12,6 +12,7 @@ public enum AppThemeMode
 public sealed class AppSettings
 {
     public AppThemeMode ThemeMode { get; set; } = AppThemeMode.System;
+    public string? MacroFilePath { get; set; }
 }
 
 public static class AppSettingsStore
