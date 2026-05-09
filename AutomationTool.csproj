@@ -14,9 +14,13 @@
     <Version>1.3.0</Version>
     <FileVersion>1.3.0.0</FileVersion>
     <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <ApplicationIcon>Assets\AutomationApp.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="Assets\AutomationApp.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="sounds\**\*.*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

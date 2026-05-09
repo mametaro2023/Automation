@@ -179,6 +179,7 @@ public partial class Form1 : Form
     private void BuildInterface()
     {
         Text = "Automation Tool";
+        SetWindowIcon();
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(920, 680);
         ClientSize = new Size(1040, 720);
@@ -495,6 +496,30 @@ public partial class Form1 : Form
         ToggleAdvancedSettings(false);
         UpdateButtons();
     }
+
+    private void SetWindowIcon()
+    {
+        try
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AutomationApp.ico");
+            if (File.Exists(iconPath))
+            {
+                Icon = new Icon(iconPath);
+                return;
+            }
+
+            var executableIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (executableIcon is not null)
+            {
+                Icon = executableIcon;
+            }
+        }
+        catch
+        {
+            // アイコン設定に失敗しても操作ツール本体の動作は継続する。
+        }
+    }
+
     private void AdjustSplitters()
     {
         if (_mainSplit is not null && _mainSplit.Width > 0)
