@@ -2,6 +2,16 @@ namespace AutomationTool;
 
 public partial class Form1 : Form
 {
+    private const string UiFontName = "Yu Gothic UI";
+    private static readonly Color UiWindowBack = Color.FromArgb(245, 246, 248);
+    private static readonly Color UiPanelBack = Color.White;
+    private static readonly Color UiChromeBack = Color.FromArgb(238, 241, 245);
+    private static readonly Color UiBorder = Color.FromArgb(205, 211, 218);
+    private static readonly Color UiText = Color.FromArgb(32, 36, 42);
+    private static readonly Color UiMutedText = Color.FromArgb(82, 90, 102);
+    private static readonly Color UiPrimary = Color.FromArgb(37, 99, 235);
+    private static readonly Color UiDanger = Color.FromArgb(190, 48, 48);
+
     private readonly InputRecorder _recorder = new();
     private readonly MacroPlayer _player = new();
     private readonly HotkeyManager _hotkeys = new();
@@ -109,7 +119,9 @@ public partial class Form1 : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(920, 680);
         ClientSize = new Size(1040, 720);
-        Font = new Font("MS UI Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        Font = new Font(UiFontName, 9F, FontStyle.Regular, GraphicsUnit.Point);
+        BackColor = UiWindowBack;
+        ForeColor = UiText;
         Resize += (_, _) => AdjustSplitters();
 
         Controls.Clear();
@@ -118,10 +130,11 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4
+            RowCount = 4,
+            BackColor = UiWindowBack
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         Controls.Add(root);
@@ -135,7 +148,10 @@ public partial class Form1 : Form
         var menu = new MenuStrip
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(4, 2, 0, 2)
+            Padding = new Padding(6, 2, 0, 2),
+            BackColor = UiWindowBack,
+            ForeColor = UiText,
+            RenderMode = ToolStripRenderMode.System
         };
         var fileMenu = new ToolStripMenuItem("ファイル");
         fileMenu.DropDownItems.Add("読込...", null, LoadButtonOnClick);
@@ -148,17 +164,18 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(8, 7, 8, 5),
-            WrapContents = false
+            Padding = new Padding(10, 8, 10, 6),
+            WrapContents = false,
+            BackColor = UiChromeBack
         };
         root.Controls.Add(topPanel, 0, 1);
 
-        _recordButton = CreateButton("記録", RecordButtonOnClick);
-        _stopButton = CreateButton("停止", StopButtonOnClick);
+        _recordButton = CreateButton("記録", RecordButtonOnClick, ButtonTone.Primary);
+        _stopButton = CreateButton("停止", StopButtonOnClick, ButtonTone.Danger);
         _playButton = CreateButton("再生", PlayButtonOnClick);
         _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
         _editButton = CreateButton("編集", EditButtonOnClick);
-        _deleteButton = CreateButton("削除", DeleteButtonOnClick);
+        _deleteButton = CreateButton("削除", DeleteButtonOnClick, ButtonTone.Danger);
         topPanel.Controls.AddRange(new Control[]
         {
             _recordButton,
@@ -175,9 +192,12 @@ public partial class Form1 : Form
             FixedPanel = FixedPanel.Panel1,
             Panel1MinSize = 120,
             Panel2MinSize = 120,
-            BorderStyle = BorderStyle.Fixed3D
+            BorderStyle = BorderStyle.None,
+            BackColor = UiBorder
         };
         root.Controls.Add(_mainSplit, 0, 2);
+        _mainSplit.Panel1.BackColor = UiWindowBack;
+        _mainSplit.Panel2.BackColor = UiWindowBack;
 
         _macroList = new ListView
         {
@@ -185,7 +205,12 @@ public partial class Form1 : Form
             View = View.Details,
             FullRowSelect = true,
             HideSelection = false,
-            MultiSelect = false
+            MultiSelect = false,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = UiPanelBack,
+            ForeColor = UiText,
+            GridLines = false,
+            Font = new Font(UiFontName, 9F, FontStyle.Regular, GraphicsUnit.Point)
         };
         _macroList.Columns.Add("名前", 150);
         _macroList.Columns.Add("ショートカット", 110);
@@ -202,7 +227,8 @@ public partial class Form1 : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             RowCount = 5,
-            Padding = new Padding(8)
+            Padding = new Padding(10),
+            BackColor = UiWindowBack
         };
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
@@ -228,7 +254,9 @@ public partial class Form1 : Form
         {
             Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
             Location = new Point(12, 158),
-            Size = new Size(420, 20)
+            Size = new Size(420, 20),
+            ForeColor = UiMutedText,
+            BackColor = Color.Transparent
         });
 
         var recordGroup = CreateGroup("記録・再生");
@@ -267,7 +295,9 @@ public partial class Form1 : Form
             Text = "詳細設定を表示",
             AutoSize = true,
             Dock = DockStyle.Left,
-            Margin = new Padding(8, 4, 4, 0)
+            Margin = new Padding(8, 4, 4, 0),
+            ForeColor = UiMutedText,
+            BackColor = UiWindowBack
         };
         advancedToggle.CheckedChanged += (_, _) => ToggleAdvancedSettings(advancedToggle.Checked);
         rightPanel.Controls.Add(advancedToggle, 0, 2);
@@ -276,7 +306,8 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
-            Visible = false
+            Visible = false,
+            BackColor = UiWindowBack
         };
         rightPanel.Controls.Add(_advancedSettingsPanel, 0, 3);
 
@@ -333,7 +364,9 @@ public partial class Form1 : Form
         _summaryLabel = new Label
         {
             Dock = DockStyle.Fill,
-            BorderStyle = BorderStyle.Fixed3D,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = UiPanelBack,
+            ForeColor = UiMutedText,
             Padding = new Padding(10),
             Text = "マクロが選択されていません。"
         };
@@ -345,7 +378,10 @@ public partial class Form1 : Form
         _statusLabel = new ToolStripStatusLabel("待機中。");
         var statusStrip = new StatusStrip
         {
-            Dock = DockStyle.Fill
+            Dock = DockStyle.Fill,
+            BackColor = UiWindowBack,
+            ForeColor = UiMutedText,
+            SizingGrip = true
         };
         statusStrip.Items.Add(_statusLabel);
         root.Controls.Add(statusStrip, 0, 3);
@@ -369,25 +405,65 @@ public partial class Form1 : Form
 
     }
 
-    private static Button CreateButton(string text, EventHandler click)
+    private enum ButtonTone
     {
+        Normal,
+        Primary,
+        Danger
+    }
+
+    private static Button CreateButton(string text, EventHandler click, ButtonTone tone = ButtonTone.Normal)
+    {
+        var backColor = tone switch
+        {
+            ButtonTone.Primary => UiPrimary,
+            _ => UiPanelBack
+        };
+        var foreColor = tone switch
+        {
+            ButtonTone.Primary => Color.White,
+            ButtonTone.Danger => UiDanger,
+            _ => UiText
+        };
+        var borderColor = tone switch
+        {
+            ButtonTone.Primary => UiPrimary,
+            ButtonTone.Danger => Color.FromArgb(218, 168, 168),
+            _ => UiBorder
+        };
+
         var button = new Button
         {
             Text = text,
-            Size = new Size(72, 24),
-            Margin = new Padding(0, 0, 10, 0)
+            Size = new Size(84, 26),
+            Margin = new Padding(0, 0, 10, 0),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = backColor,
+            ForeColor = foreColor,
+            UseVisualStyleBackColor = false
         };
+        button.FlatAppearance.BorderColor = borderColor;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = tone == ButtonTone.Primary
+            ? Color.FromArgb(29, 78, 216)
+            : Color.FromArgb(248, 250, 252);
+        button.FlatAppearance.MouseDownBackColor = tone == ButtonTone.Primary
+            ? Color.FromArgb(30, 64, 175)
+            : Color.FromArgb(229, 233, 238);
         button.Click += click;
         return button;
     }
 
     private static GroupBox CreateGroup(string text)
     {
-        return new GroupBox
+        return new SectionGroupBox
         {
             Text = text,
             Dock = DockStyle.Fill,
-            Margin = new Padding(4)
+            Margin = new Padding(4, 4, 4, 8),
+            Padding = new Padding(10, 22, 10, 10),
+            BackColor = UiPanelBack,
+            ForeColor = UiText
         };
     }
 
@@ -397,14 +473,36 @@ public partial class Form1 : Form
         {
             Text = labelText,
             Location = new Point(12, y + 4),
-            Size = new Size(labelWidth, 20)
+            Size = new Size(labelWidth, 20),
+            ForeColor = UiMutedText,
+            BackColor = Color.Transparent
         };
         parent.Controls.Add(label);
         control.Location = new Point(18 + labelWidth, y);
         control.Size = new Size(Math.Max(80, parent.Width - labelWidth - 36), 23);
         control.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+        StyleInputControl(control);
         parent.Controls.Add(control);
         return label;
+    }
+
+    private static void StyleInputControl(Control control)
+    {
+        control.BackColor = UiPanelBack;
+        control.ForeColor = UiText;
+
+        switch (control)
+        {
+            case TextBox textBox:
+                textBox.BorderStyle = BorderStyle.FixedSingle;
+                break;
+            case ComboBox comboBox:
+                comboBox.FlatStyle = FlatStyle.Flat;
+                break;
+            case NumericUpDown numericUpDown:
+                numericUpDown.BorderStyle = BorderStyle.FixedSingle;
+                break;
+        }
     }
 
     private void ToggleAdvancedSettings(bool visible)
@@ -1181,6 +1279,37 @@ public partial class Form1 : Form
             Alt = true,
             Key = Keys.End
         };
+    }
+
+    private sealed class SectionGroupBox : GroupBox
+    {
+        public SectionGroupBox()
+        {
+            SetStyle(ControlStyles.UserPaint
+                | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.Clear(BackColor);
+
+            var borderRect = new Rectangle(0, 10, Width - 1, Height - 11);
+            using var borderPen = new Pen(UiBorder);
+            e.Graphics.DrawRectangle(borderPen, borderRect);
+
+            var titleSize = TextRenderer.MeasureText(Text, Font);
+            var titleRect = new Rectangle(10, 0, titleSize.Width + 8, 20);
+            using var titleBack = new SolidBrush(BackColor);
+            e.Graphics.FillRectangle(titleBack, titleRect);
+            TextRenderer.DrawText(
+                e.Graphics,
+                Text,
+                Font,
+                new Point(14, 2),
+                UiText,
+                TextFormatFlags.NoPadding);
+        }
     }
 
     private sealed class EmergencyStopOverlay : Control
