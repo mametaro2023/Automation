@@ -342,7 +342,7 @@ public partial class Form1 : Form
 
         var recordGroup = CreateGroup("記録・再生");
         rightPanel.Controls.Add(recordGroup, 0, 1);
-        _recordingModeBox = new ComboBox
+        _recordingModeBox = new ScrollFriendlyComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList
         };
@@ -350,20 +350,20 @@ public partial class Form1 : Form
         _recordingModeBox.SelectedIndex = 0;
         _recordingModeBox.SelectedIndexChanged += (_, _) => RecordingModeOnChanged();
         AddLabeledControl(recordGroup, "記録方式", _recordingModeBox, 20, 118);
-        _densityBox = new ComboBox
+        _densityBox = new ScrollFriendlyComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         _densityBox.Items.AddRange(new object[] { "軽量", "標準", "高精度" });
         _densityBox.SelectedIndex = 1;
         AddLabeledControl(recordGroup, "密度", _densityBox, 48, 118);
-        AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new NumericUpDown
+        AddLabeledControl(recordGroup, "開始待ち秒", _countdownBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 0,
             Maximum = 60,
             Value = 3
         }, 76, 118);
-        AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new NumericUpDown
+        AddLabeledControl(recordGroup, "再生速度(%)", _playbackSpeedBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 10,
             Maximum = 500,
@@ -394,7 +394,7 @@ public partial class Form1 : Form
 
         var detailGroup = CreateGroup("詳細設定");
         _advancedSettingsPanel.Controls.Add(detailGroup);
-        AddLabeledControl(detailGroup, "イベント間隔(ms)", _eventIntervalBox = new NumericUpDown
+        AddLabeledControl(detailGroup, "イベント間隔(ms)", _eventIntervalBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 10,
             Maximum = 600000,
@@ -402,7 +402,7 @@ public partial class Form1 : Form
             Value = 200,
             ThousandsSeparator = true
         }, 20, 118);
-        AddLabeledControl(detailGroup, "押下時間(ms)", _holdDurationBox = new NumericUpDown
+        AddLabeledControl(detailGroup, "押下時間(ms)", _holdDurationBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 1,
             Maximum = 600000,
@@ -410,31 +410,31 @@ public partial class Form1 : Form
             Value = 60,
             ThousandsSeparator = true
         }, 48, 118);
-        AddLabeledControl(detailGroup, "クリック座標(px)", _coordNoiseBox = new NumericUpDown
+        AddLabeledControl(detailGroup, "クリック座標(px)", _coordNoiseBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 0,
             Maximum = 20,
             Value = 2
         }, 76, 118);
-        _timeNoiseLabel = AddLabeledControl(detailGroup, "時間(%)", _timeNoiseBox = new NumericUpDown
+        _timeNoiseLabel = AddLabeledControl(detailGroup, "時間(%)", _timeNoiseBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 5
         }, 104, 118);
-        AddLabeledControl(detailGroup, "軌道ブレ(px)", _trajectoryNoiseBox = new NumericUpDown
+        AddLabeledControl(detailGroup, "軌道ブレ(px)", _trajectoryNoiseBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 0,
             Maximum = 80,
             Value = 16
         }, 132, 118);
-        AddLabeledControl(detailGroup, "加速度(%)", _accelNoiseBox = new NumericUpDown
+        AddLabeledControl(detailGroup, "加速度(%)", _accelNoiseBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 0,
             Maximum = 50,
             Value = 12
         }, 160, 118);
-        AddLabeledControl(detailGroup, "プレビュー数", _previewPathCountBox = new NumericUpDown
+        AddLabeledControl(detailGroup, "プレビュー数", _previewPathCountBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 1,
             Maximum = 10,
@@ -1671,6 +1671,62 @@ public partial class Form1 : Form
                 new Point(14, 6),
                 UiText,
                 TextFormatFlags.NoPadding);
+        }
+    }
+
+    private sealed class ScrollFriendlyNumericUpDown : NumericUpDown
+    {
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            ScrollNearestParent(this, e.Delta);
+        }
+    }
+
+    private sealed class ScrollFriendlyComboBox : ComboBox
+    {
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            if (DroppedDown)
+            {
+                base.OnMouseWheel(e);
+                return;
+            }
+
+            ScrollNearestParent(this, e.Delta);
+        }
+    }
+
+    private static void ScrollNearestParent(Control source, int delta)
+    {
+        if (delta == 0)
+        {
+            return;
+        }
+
+        var parent = source.Parent;
+        while (parent is not null)
+        {
+            if (parent is ScrollableControl { AutoScroll: true } scrollable
+                && scrollable.VerticalScroll.Visible)
+            {
+                var wheelSteps = Math.Max(1, Math.Abs(delta) / SystemInformation.MouseWheelScrollDelta);
+                var wheelLines = SystemInformation.MouseWheelScrollLines <= 0
+                    ? 3
+                    : SystemInformation.MouseWheelScrollLines;
+                var distance = wheelSteps * wheelLines * Math.Max(1, scrollable.VerticalScroll.SmallChange);
+                var nextValue = scrollable.VerticalScroll.Value + (delta > 0 ? -distance : distance);
+                var maxValue = Math.Max(
+                    scrollable.VerticalScroll.Minimum,
+                    scrollable.VerticalScroll.Maximum - scrollable.VerticalScroll.LargeChange + 1);
+                scrollable.VerticalScroll.Value = Math.Clamp(
+                    nextValue,
+                    scrollable.VerticalScroll.Minimum,
+                    maxValue);
+                scrollable.PerformLayout();
+                return;
+            }
+
+            parent = parent.Parent;
         }
     }
 
