@@ -78,10 +78,17 @@ public partial class Form1 : Form
     private bool _restoreWindowAfterRecording;
     private bool _updatingSelection;
 
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int SetPreferredAppModeDelegate(int appMode);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void FlushMenuThemesDelegate();
+
     public Form1()
     {
         InitializeComponent();
         _themeMode = AppSettingsStore.Load().ThemeMode;
+        ApplyProcessDarkMode(IsThemeModeDark(_themeMode));
         SystemEvents.UserPreferenceChanged += SystemEventsOnUserPreferenceChanged;
         BuildInterface();
         LoadDefaultMacros();
@@ -92,6 +99,7 @@ public partial class Form1 : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        ApplyTheme();
         AdjustSplitters();
         RefreshHotkeys();
     }
@@ -593,8 +601,8 @@ public partial class Form1 : Form
 
     private void ApplyTheme()
     {
-        _darkThemeActive = _themeMode == AppThemeMode.Dark
-            || (_themeMode == AppThemeMode.System && IsSystemDarkTheme());
+        _darkThemeActive = IsThemeModeDark(_themeMode);
+        ApplyProcessDarkMode(_darkThemeActive);
         ApplyPalette(_darkThemeActive);
         ApplyThemeToControl(this);
         StyleButton(_recordButton, ButtonTone.Primary);
@@ -691,6 +699,7 @@ public partial class Form1 : Form
             case Panel:
                 control.BackColor = UiWindowBack;
                 control.ForeColor = UiText;
+                ApplyNativeControlTheme(control);
                 break;
             case TextBox:
             case ComboBox:
@@ -793,6 +802,41 @@ public partial class Form1 : Form
         catch
         {
             return false;
+        }
+    }
+
+    private static bool IsThemeModeDark(AppThemeMode themeMode)
+    {
+        return themeMode == AppThemeMode.Dark
+            || (themeMode == AppThemeMode.System && IsSystemDarkTheme());
+    }
+
+    private static void ApplyProcessDarkMode(bool dark)
+    {
+        try
+        {
+            var uxtheme = NativeMethods.GetModuleHandle("uxtheme.dll");
+            if (uxtheme == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var setPreferredAppMode = NativeMethods.GetProcAddressByOrdinal(uxtheme, 135);
+            if (setPreferredAppMode != IntPtr.Zero)
+            {
+                var setMode = Marshal.GetDelegateForFunctionPointer<SetPreferredAppModeDelegate>(setPreferredAppMode);
+                _ = setMode(dark ? 2 : 3);
+            }
+
+            var flushMenuThemes = NativeMethods.GetProcAddressByOrdinal(uxtheme, 136);
+            if (flushMenuThemes != IntPtr.Zero)
+            {
+                Marshal.GetDelegateForFunctionPointer<FlushMenuThemesDelegate>(flushMenuThemes)();
+            }
+        }
+        catch
+        {
+            // Native process dark mode is best-effort.
         }
     }
 

@@ -190,4 +190,10 @@ internal static class NativeMethods
 
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
     public static extern int SetWindowTheme(IntPtr hwnd, string? pszSubAppName, string? pszSubIdList);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandle(string lpModuleName);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetProcAddress")]
+    public static extern IntPtr GetProcAddressByOrdinal(IntPtr hModule, IntPtr ordinal);
 }
