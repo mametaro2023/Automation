@@ -69,6 +69,7 @@ public partial class Form1 : Form
     private SplitContainer _mainSplit = null!;
     private Control _advancedSettingsPanel = null!;
     private RowStyle _advancedSettingsRow = null!;
+    private RecordingStatusOverlayForm? _recordingOverlay;
     private AppThemeMode _themeMode;
     private bool _darkThemeActive;
     private CancellationTokenSource? _countdownCts;
@@ -113,6 +114,7 @@ public partial class Form1 : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         SystemEvents.UserPreferenceChanged -= SystemEventsOnUserPreferenceChanged;
+        HideRecordingOverlay();
         base.OnFormClosed(e);
     }
 
@@ -270,6 +272,7 @@ public partial class Form1 : Form
             FixedPanel = FixedPanel.Panel1,
             Panel1MinSize = 120,
             Panel2MinSize = 120,
+            IsSplitterFixed = true,
             BorderStyle = BorderStyle.None,
             BackColor = UiBorder
         };
@@ -294,9 +297,9 @@ public partial class Form1 : Form
         _macroList.DrawColumnHeader += MacroListOnDrawColumnHeader;
         _macroList.DrawSubItem += MacroListOnDrawSubItem;
         _macroList.Columns.Add("名前", 150);
-        _macroList.Columns.Add("ショートカット", 110);
-        _macroList.Columns.Add("件数", 54);
-        _macroList.Columns.Add("時間", 70);
+        _macroList.Columns.Add("ショートカット", 100);
+        _macroList.Columns.Add("件数", 45);
+        _macroList.Columns.Add("時間", 88);
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
         _mainSplit.Panel1.Controls.Add(_macroList);
 
@@ -475,8 +478,8 @@ public partial class Form1 : Form
     {
         if (_mainSplit is not null && _mainSplit.Width > 0)
         {
-            const int desiredLeft = 390;
-            const int desiredLeftMin = 320;
+            const int desiredLeft = 420;
+            const int desiredLeftMin = 420;
             const int desiredRightMin = 520;
             var maxDistance = _mainSplit.Width - desiredRightMin - _mainSplit.SplitterWidth;
             if (maxDistance >= desiredLeftMin)
@@ -928,11 +931,13 @@ public partial class Form1 : Form
         try
         {
             _recorder.Start(options);
+            ShowRecordingOverlay();
             SetStatus($"記録中: {options.Name} / {options.MousePollingRateHz}Hz");
             UpdateButtons();
         }
         catch (Exception ex)
         {
+            HideRecordingOverlay();
             RestoreAfterRecording();
             SetStatus(ex.Message);
             MessageBox.Show(this, ex.Message, "記録エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -975,8 +980,29 @@ public partial class Form1 : Form
     private void EmergencyStopCurrentWork()
     {
         StopCurrentWork();
+        HideRecordingOverlay();
         _emergencyOverlay.ShowMessage();
         SetStatus("緊急停止しました。");
+    }
+
+    private void ShowRecordingOverlay()
+    {
+        HideRecordingOverlay();
+        var screen = Screen.FromControl(this);
+        _recordingOverlay = new RecordingStatusOverlayForm(screen, $"{_recordingStopHotkey}で記録を停止");
+        _recordingOverlay.Show();
+    }
+
+    private void HideRecordingOverlay()
+    {
+        if (_recordingOverlay is null)
+        {
+            return;
+        }
+
+        _recordingOverlay.Close();
+        _recordingOverlay.Dispose();
+        _recordingOverlay = null;
     }
 
     private void PlayButtonOnClick(object? sender, EventArgs e)
@@ -1128,6 +1154,7 @@ public partial class Form1 : Form
             }
 
             RefreshHotkeys();
+            HideRecordingOverlay();
             RestoreAfterRecording();
         }
         else if (_player.IsPlaying)
