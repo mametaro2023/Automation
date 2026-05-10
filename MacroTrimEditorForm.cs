@@ -1,6 +1,8 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using SkiaSharp;
+using SkiaSharp.Views.Desktop;
 
 namespace AutomationTool;
 
@@ -1420,7 +1422,7 @@ public sealed class MacroTrimEditorForm : Form
         }
     }
 
-    private sealed class TrimRangeControl : Control
+    private sealed class TrimRangeControl : SKControl
     {
         private const int HandleWidth = 12;
         private const int BarHeight = 14;
@@ -1432,10 +1434,6 @@ public sealed class MacroTrimEditorForm : Form
 
         public TrimRangeControl()
         {
-            SetStyle(ControlStyles.AllPaintingInWmPaint
-                | ControlStyles.OptimizedDoubleBuffer
-                | ControlStyles.ResizeRedraw
-                | ControlStyles.UserPaint, true);
             BackColor = Color.FromArgb(34, 37, 43);
             Cursor = Cursors.Hand;
             MinimumSize = new Size(220, 42);
@@ -1549,33 +1547,32 @@ public sealed class MacroTrimEditorForm : Form
             RangeChangeCompleted?.Invoke(this, EventArgs.Empty);
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
         {
-            base.OnPaint(e);
-            var g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(BackColor);
+            base.OnPaintSurface(e);
+            var canvas = e.Surface.Canvas;
+            canvas.Clear(ToSKColor(BackColor));
             var bar = GetBarBounds();
             var startX = TimeToX(StartMs, bar);
             var endX = TimeToX(EndMs, bar);
             var range = Rectangle.FromLTRB(startX, bar.Top, Math.Max(startX + 1, endX), bar.Bottom);
 
-            using var outerBrush = new SolidBrush(Color.FromArgb(75, 10, 12, 16));
-            using var barBrush = new SolidBrush(Color.FromArgb(75, 222, 226, 232));
-            using var rangeBrush = new SolidBrush(Color.FromArgb(210, 95, 220, 255));
-            using var handleBrush = new SolidBrush(Color.FromArgb(235, 235, 240, 245));
-            using var textBrush = new SolidBrush(Color.FromArgb(220, 224, 230));
-            using var borderPen = new Pen(Color.FromArgb(82, 88, 98));
-
-            g.FillRectangle(outerBrush, bar);
-            g.FillRectangle(barBrush, bar);
-            g.FillRectangle(rangeBrush, range);
-            g.DrawRectangle(borderPen, bar);
-            DrawHandle(g, startX, bar, handleBrush);
-            DrawHandle(g, endX, bar, handleBrush);
+            using var fill = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill };
+            using var stroke = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+            fill.Color = new SKColor(10, 12, 16, 75);
+            canvas.DrawRect(ToSKRect(bar), fill);
+            fill.Color = new SKColor(222, 226, 232, 75);
+            canvas.DrawRect(ToSKRect(bar), fill);
+            fill.Color = new SKColor(95, 220, 255, 210);
+            canvas.DrawRect(ToSKRect(range), fill);
+            stroke.Color = new SKColor(82, 88, 98);
+            canvas.DrawRect(ToSKRect(bar), stroke);
+            fill.Color = new SKColor(235, 235, 240, 245);
+            DrawHandle(canvas, startX, bar, fill);
+            DrawHandle(canvas, endX, bar, fill);
 
             var text = $"トリム: {StartMs:N0} ms - {EndMs:N0} ms";
-            g.DrawString(text, Font, textBrush, bar.Left, 2);
+            DrawSkText(canvas, text, bar.Left, 16, 12, new SKColor(220, 224, 230));
         }
 
         private void UpdateCursor(Point location)
@@ -1609,17 +1606,37 @@ public sealed class MacroTrimEditorForm : Form
             return (long)Math.Round(progress * DurationMs);
         }
 
-        private static void DrawHandle(Graphics g, int x, Rectangle bar, Brush brush)
+        private static void DrawHandle(SKCanvas canvas, int x, Rectangle bar, SKPaint paint)
         {
-            var points = new[]
+            using var path = new SKPath();
+            path.MoveTo(x, bar.Top - 6);
+            path.LineTo(x - 6, bar.Top);
+            path.LineTo(x - 6, bar.Bottom);
+            path.LineTo(x + 6, bar.Bottom);
+            path.LineTo(x + 6, bar.Top);
+            path.Close();
+            canvas.DrawPath(path, paint);
+        }
+
+        private static SKRect ToSKRect(Rectangle rect)
+        {
+            return new SKRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        }
+
+        private static SKColor ToSKColor(Color color)
+        {
+            return new SKColor(color.R, color.G, color.B, color.A);
+        }
+
+        private static void DrawSkText(SKCanvas canvas, string text, float x, float baseline, float size, SKColor color)
+        {
+            using var font = new SKFont(SKTypeface.FromFamilyName("Yu Gothic UI"), size);
+            using var paint = new SKPaint
             {
-                new Point(x, bar.Top - 6),
-                new Point(x - 6, bar.Top),
-                new Point(x - 6, bar.Bottom),
-                new Point(x + 6, bar.Bottom),
-                new Point(x + 6, bar.Top)
+                IsAntialias = true,
+                Color = color
             };
-            g.FillPolygon(brush, points);
+            canvas.DrawText(text, x, baseline, font, paint);
         }
 
         private enum DragMode
@@ -1631,7 +1648,7 @@ public sealed class MacroTrimEditorForm : Form
         }
     }
 
-    private sealed class MacroTimelineControl : Control
+    private sealed class MacroTimelineControl : SKControl
     {
         private const int LabelWidth = 104;
         private const int RulerHeight = 24;
@@ -1640,7 +1657,7 @@ public sealed class MacroTrimEditorForm : Form
         private readonly List<TimelineHit> _hits = new();
         private TimelineDrag? _drag;
         private List<MacroEvent> _events = new();
-        private Bitmap? _baseBitmap;
+        private SKBitmap? _baseBitmap;
         private Size _baseBitmapSize;
         private bool _baseCacheDirty = true;
         private long _eventSignature;
@@ -1652,10 +1669,6 @@ public sealed class MacroTrimEditorForm : Form
 
         public MacroTimelineControl()
         {
-            SetStyle(ControlStyles.AllPaintingInWmPaint
-                | ControlStyles.OptimizedDoubleBuffer
-                | ControlStyles.ResizeRedraw
-                | ControlStyles.UserPaint, true);
             BackColor = Color.FromArgb(18, 20, 24);
             Cursor = Cursors.Hand;
         }
@@ -1777,12 +1790,10 @@ public sealed class MacroTrimEditorForm : Form
             EventTimeEditCompleted?.Invoke();
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
         {
-            base.OnPaint(e);
-            var g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            base.OnPaintSurface(e);
+            var canvas = e.Surface.Canvas;
 
             var plot = GetPlotBounds();
             if (plot.Width <= 10 || plot.Height <= 10)
@@ -1793,16 +1804,16 @@ public sealed class MacroTrimEditorForm : Form
             EnsureBaseBitmap(plot);
             if (_baseBitmap is not null)
             {
-                g.DrawImageUnscaled(_baseBitmap, Point.Empty);
+                canvas.DrawBitmap(_baseBitmap, 0, 0);
             }
             else
             {
-                g.Clear(BackColor);
+                canvas.Clear(ToSKColor(BackColor));
             }
 
-            DrawTrimRange(g, plot);
-            DrawCurrentTime(g, plot);
-            DrawSelectedPlayhead(g, plot);
+            DrawTrimRange(canvas, plot);
+            DrawCurrentTime(canvas, plot);
+            DrawSelectedPlayhead(canvas, plot);
         }
 
         protected override void Dispose(bool disposing)
@@ -1831,16 +1842,14 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
-            _baseBitmap = new Bitmap(Width, Height);
-            using var g = Graphics.FromImage(_baseBitmap);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-            g.Clear(BackColor);
-            DrawRuler(g, plot);
-            DrawTracks(g, plot);
-            DrawPairTrack(g, GetTrackBounds(plot, 0), MacroEventKind.MouseDown, MacroEventKind.MouseUp);
-            DrawPairTrack(g, GetTrackBounds(plot, 1), MacroEventKind.KeyDown, MacroEventKind.KeyUp);
-            DrawWheelTrack(g, GetTrackBounds(plot, 2));
+            _baseBitmap = new SKBitmap(Width, Height);
+            using var canvas = new SKCanvas(_baseBitmap);
+            canvas.Clear(ToSKColor(BackColor));
+            DrawRuler(canvas, plot);
+            DrawTracks(canvas, plot);
+            DrawPairTrack(canvas, GetTrackBounds(plot, 0), MacroEventKind.MouseDown, MacroEventKind.MouseUp);
+            DrawPairTrack(canvas, GetTrackBounds(plot, 1), MacroEventKind.KeyDown, MacroEventKind.KeyUp);
+            DrawWheelTrack(canvas, GetTrackBounds(plot, 2));
             _baseCacheDirty = false;
         }
 
@@ -1855,72 +1864,59 @@ public sealed class MacroTrimEditorForm : Form
             return new Rectangle(plot.Left, y, plot.Width, TrackHeight);
         }
 
-        private void DrawRuler(Graphics g, Rectangle plot)
+        private void DrawRuler(SKCanvas canvas, Rectangle plot)
         {
-            using var textBrush = new SolidBrush(Color.FromArgb(205, 210, 218));
-            using var linePen = new Pen(Color.FromArgb(58, 62, 70));
+            using var linePaint = new SKPaint { IsAntialias = true, Color = new SKColor(58, 62, 70), StrokeWidth = 1 };
             var ruler = new Rectangle(plot.Left, plot.Top, plot.Width, RulerHeight);
-            g.DrawLine(linePen, ruler.Left, ruler.Bottom - 1, ruler.Right, ruler.Bottom - 1);
+            canvas.DrawLine(ruler.Left, ruler.Bottom - 1, ruler.Right, ruler.Bottom - 1, linePaint);
             var tickCount = Math.Clamp(plot.Width / 150, 3, 10);
             for (var i = 0; i <= tickCount; i++)
             {
                 var time = _durationMs * i / tickCount;
                 var x = TimeToX(time, plot);
-                g.DrawLine(linePen, x, ruler.Bottom - 8, x, ruler.Bottom);
-                var labelRect = i == tickCount
-                    ? new Rectangle(Math.Max(plot.Left, x - 90), ruler.Top + 2, 88, 18)
-                    : new Rectangle(x + 4, ruler.Top + 2, 90, 18);
-                TextRenderer.DrawText(
-                    g,
-                    $"{time:N0} ms",
-                    Font,
-                    labelRect,
-                    Color.FromArgb(205, 210, 218),
-                    (i == tickCount ? TextFormatFlags.Right : TextFormatFlags.Left)
-                    | TextFormatFlags.VerticalCenter
-                    | TextFormatFlags.EndEllipsis);
+                canvas.DrawLine(x, ruler.Bottom - 8, x, ruler.Bottom, linePaint);
+                var label = $"{time:N0} ms";
+                var labelX = i == tickCount ? Math.Max(plot.Left, x - 86) : x + 4;
+                DrawSkText(canvas, label, labelX, ruler.Top + 15, 11, new SKColor(205, 210, 218));
             }
         }
 
-        private void DrawTracks(Graphics g, Rectangle plot)
+        private void DrawTracks(SKCanvas canvas, Rectangle plot)
         {
             var labels = new[] { "マウス", "キー", "ホイール" };
-            using var gridPen = new Pen(Color.FromArgb(42, 45, 50));
-            using var laneBrush = new SolidBrush(Color.FromArgb(25, 28, 33));
+            using var fillPaint = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(25, 28, 33) };
+            using var strokePaint = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(42, 45, 50) };
             for (var i = 0; i < labels.Length; i++)
             {
                 var track = GetTrackBounds(plot, i);
-                g.FillRectangle(laneBrush, track);
-                g.DrawRectangle(gridPen, track);
-                TextRenderer.DrawText(
-                    g,
-                    labels[i],
-                    Font,
-                    new Rectangle(8, track.Top, LabelWidth - 14, TrackHeight),
-                    Color.FromArgb(220, 224, 230),
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                canvas.DrawRect(ToSKRect(track), fillPaint);
+                canvas.DrawRect(ToSKRect(track), strokePaint);
+                DrawSkText(canvas, labels[i], 18, track.Top + track.Height / 2F + 4, 12, new SKColor(220, 224, 230));
             }
         }
 
-        private void DrawTrimRange(Graphics g, Rectangle plot)
+        private void DrawTrimRange(SKCanvas canvas, Rectangle plot)
         {
             var left = TimeToX(_startMs, plot);
             var right = TimeToX(_endMs, plot);
             var trimRect = Rectangle.FromLTRB(left, plot.Top + RulerHeight, Math.Max(left + 1, right), plot.Bottom);
-            using var trimBrush = new SolidBrush(Color.FromArgb(34, 235, 70, 72));
-            using var trimPen = new Pen(Color.FromArgb(230, 235, 70, 72), 2F);
-            g.FillRectangle(trimBrush, trimRect);
-            g.DrawLine(trimPen, left, plot.Top + RulerHeight, left, plot.Bottom);
-            g.DrawLine(trimPen, right, plot.Top + RulerHeight, right, plot.Bottom);
+            using var fillPaint = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(235, 70, 72, 34) };
+            using var linePaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2, Color = new SKColor(235, 70, 72, 230) };
+            canvas.DrawRect(ToSKRect(trimRect), fillPaint);
+            canvas.DrawLine(left, plot.Top + RulerHeight, left, plot.Bottom, linePaint);
+            canvas.DrawLine(right, plot.Top + RulerHeight, right, plot.Bottom, linePaint);
         }
 
-        private void DrawPairTrack(Graphics g, Rectangle track, MacroEventKind downKind, MacroEventKind upKind)
+        private void DrawPairTrack(SKCanvas canvas, Rectangle track, MacroEventKind downKind, MacroEventKind upKind)
         {
-            using var barBrush = new SolidBrush(downKind == MacroEventKind.MouseDown
-                ? Color.FromArgb(205, 95, 220, 255)
-                : Color.FromArgb(205, 255, 210, 92));
-            using var markerBrush = new SolidBrush(Color.Gold);
-            using var selectedBrush = new SolidBrush(Color.FromArgb(255, 95, 220, 255));
+            using var barPaint = new SKPaint
+            {
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill,
+                Color = downKind == MacroEventKind.MouseDown ? new SKColor(95, 220, 255, 205) : new SKColor(255, 210, 92, 205)
+            };
+            using var markerPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(255, 215, 0) };
+            using var selectedPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(95, 220, 255) };
             var lanes = new List<long>();
             var open = new Dictionary<string, (MacroEvent Event, int Index)>();
             foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index }))
@@ -1929,7 +1925,7 @@ public sealed class MacroTrimEditorForm : Form
                 if (item.macroEvent.Kind == downKind)
                 {
                     open[key] = (item.macroEvent, item.index);
-                    DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+                    DrawMarker(canvas, track, item.macroEvent, item.index, markerPaint, selectedPaint);
                 }
                 else if (item.macroEvent.Kind == upKind)
                 {
@@ -1941,17 +1937,17 @@ public sealed class MacroTrimEditorForm : Form
                         var laneHeight = Math.Max(16, (track.Height - 4) / Math.Max(1, Math.Min(3, lanes.Count)));
                         var y = track.Top + 3 + lane * laneHeight;
                         var rect = Rectangle.FromLTRB(Math.Min(x1, x2), y + 7, Math.Max(x1, x2) + 1, y + 17);
-                        g.FillRectangle(barBrush, rect);
+                        canvas.DrawRoundRect(ToSKRect(rect), 4, 4, barPaint);
                         var hitRect = rect;
                         hitRect.Inflate(0, 7);
                         _hits.Add(new TimelineHit(start.Index, start.Index, item.index, hitRect, TimelineEditKind.Range));
                         _hits.Add(new TimelineHit(start.Index, start.Index, item.index, new Rectangle(rect.Left - 5, rect.Top - 5, 10, rect.Height + 10), TimelineEditKind.Start));
                         _hits.Add(new TimelineHit(item.index, start.Index, item.index, new Rectangle(rect.Right - 5, rect.Top - 5, 10, rect.Height + 10), TimelineEditKind.End));
-                        DrawEventLabel(g, new Rectangle(track.Left, y, track.Width, laneHeight), start.Event, rect);
+                        DrawEventLabel(canvas, new Rectangle(track.Left, y, track.Width, laneHeight), start.Event, rect);
                         open.Remove(key);
                     }
 
-                    DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+                    DrawMarker(canvas, track, item.macroEvent, item.index, markerPaint, selectedPaint);
                 }
             }
         }
@@ -1971,29 +1967,29 @@ public sealed class MacroTrimEditorForm : Form
             return laneEnds.Count - 1;
         }
 
-        private void DrawWheelTrack(Graphics g, Rectangle track)
+        private void DrawWheelTrack(SKCanvas canvas, Rectangle track)
         {
-            using var markerBrush = new SolidBrush(Color.FromArgb(255, 190, 140));
-            using var selectedBrush = new SolidBrush(Color.FromArgb(255, 95, 220, 255));
+            using var markerPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(255, 190, 140) };
+            using var selectedPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(95, 220, 255) };
             foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index })
                          .Where(item => item.macroEvent.Kind == MacroEventKind.MouseWheel))
             {
-                DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
-                DrawEventLabel(g, track, item.macroEvent);
+                DrawMarker(canvas, track, item.macroEvent, item.index, markerPaint, selectedPaint);
+                DrawEventLabel(canvas, track, item.macroEvent);
             }
         }
 
-        private void DrawMarker(Graphics g, Rectangle track, MacroEvent macroEvent, int index, Brush markerBrush, Brush selectedBrush)
+        private void DrawMarker(SKCanvas canvas, Rectangle track, MacroEvent macroEvent, int index, SKPaint markerPaint, SKPaint selectedPaint)
         {
             var x = TimeToX(macroEvent.TimeOffsetMs, GetPlotBounds());
             var selected = _selectedIndex == index;
             var size = selected ? 10 : 7;
             var rect = new Rectangle(x - size / 2, track.Top + track.Height / 2 - size / 2, size, size);
-            g.FillEllipse(selected ? selectedBrush : markerBrush, rect);
+            canvas.DrawOval(ToSKRect(rect), selected ? selectedPaint : markerPaint);
             _hits.Add(new TimelineHit(index, index, index, rect, TimelineEditKind.Range));
         }
 
-        private void DrawEventLabel(Graphics g, Rectangle track, MacroEvent macroEvent, Rectangle? avoidRect = null)
+        private void DrawEventLabel(SKCanvas canvas, Rectangle track, MacroEvent macroEvent, Rectangle? avoidRect = null)
         {
             var text = GetShortEventLabel(macroEvent);
             if (string.IsNullOrWhiteSpace(text))
@@ -2013,16 +2009,10 @@ public sealed class MacroTrimEditorForm : Form
                 track.Top + 1,
                 62,
                 Math.Max(12, track.Height / 2));
-            TextRenderer.DrawText(
-                g,
-                text,
-                Font,
-                rect,
-                Color.FromArgb(232, 236, 242),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            DrawSkText(canvas, text, rect.Left, rect.Top + rect.Height / 2F + 4, 11, new SKColor(232, 236, 242));
         }
 
-        private void DrawSelectedPlayhead(Graphics g, Rectangle plot)
+        private void DrawSelectedPlayhead(SKCanvas canvas, Rectangle plot)
         {
             if (_selectedIndex is null || _selectedIndex < 0 || _selectedIndex >= _events.Count)
             {
@@ -2031,22 +2021,16 @@ public sealed class MacroTrimEditorForm : Form
 
             var selected = _events[_selectedIndex.Value];
             var x = TimeToX(selected.TimeOffsetMs, plot);
-            using var pen = new Pen(Color.FromArgb(255, 95, 220, 255), 2F);
-            g.DrawLine(pen, x, plot.Top, x, plot.Bottom);
-            TextRenderer.DrawText(
-                g,
-                $"{selected.TimeOffsetMs:N0} ms",
-                Font,
-                new Rectangle(Math.Min(x + 6, plot.Right - 90), plot.Top + 2, 86, 18),
-                Color.FromArgb(95, 220, 255),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            using var linePaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2, Color = new SKColor(95, 220, 255) };
+            canvas.DrawLine(x, plot.Top, x, plot.Bottom, linePaint);
+            DrawSkText(canvas, $"{selected.TimeOffsetMs:N0} ms", Math.Min(x + 6, plot.Right - 90), plot.Top + 15, 11, new SKColor(95, 220, 255));
         }
 
-        private void DrawCurrentTime(Graphics g, Rectangle plot)
+        private void DrawCurrentTime(SKCanvas canvas, Rectangle plot)
         {
             var x = TimeToX(_currentTimeMs, plot);
-            using var pen = new Pen(Color.FromArgb(230, 255, 255, 255), 1.5F);
-            g.DrawLine(pen, x, plot.Top, x, plot.Bottom);
+            using var linePaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5F, Color = new SKColor(255, 255, 255, 230) };
+            canvas.DrawLine(x, plot.Top, x, plot.Bottom, linePaint);
         }
 
         private int TimeToX(long timeMs, Rectangle plot)
@@ -2091,6 +2075,27 @@ public sealed class MacroTrimEditorForm : Form
         {
             var progress = Math.Clamp((x - plot.Left) / (double)Math.Max(1, plot.Width - 1), 0.0, 1.0);
             return (long)Math.Round(progress * _durationMs);
+        }
+
+        private static SKRect ToSKRect(Rectangle rect)
+        {
+            return new SKRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        }
+
+        private static SKColor ToSKColor(Color color)
+        {
+            return new SKColor(color.R, color.G, color.B, color.A);
+        }
+
+        private static void DrawSkText(SKCanvas canvas, string text, float x, float baseline, float size, SKColor color)
+        {
+            using var font = new SKFont(SKTypeface.FromFamilyName("Yu Gothic UI"), size);
+            using var paint = new SKPaint
+            {
+                IsAntialias = true,
+                Color = color
+            };
+            canvas.DrawText(text, x, baseline, font, paint);
         }
 
         private sealed record TimelineHit(int EventIndex, int StartIndex, int EndIndex, Rectangle Bounds, TimelineEditKind EditKind);
