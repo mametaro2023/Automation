@@ -641,8 +641,34 @@ public sealed class MacroTrimEditorForm : Form
 
         startEvent.TimeOffsetMs = newStart;
         endEvent.TimeOffsetMs = newEnd;
+        UpdateEditedEventPosition(startEvent, newStart);
+        if (!ReferenceEquals(startEvent, endEvent))
+        {
+            UpdateEditedEventPosition(endEvent, newEnd);
+        }
+
         SortEventsPreservingSelection(startIndex);
         RefreshEditor();
+    }
+
+    private void UpdateEditedEventPosition(MacroEvent macroEvent, long timeMs)
+    {
+        if (!IsDrawablePoint(macroEvent))
+        {
+            return;
+        }
+
+        var paired = FindPairedEventIndex(_events, _events.IndexOf(macroEvent));
+        var point = paired is not null
+            ? GetPointAtTime(timeMs, macroEvent, _events[paired.Value])
+            : GetPointAtTime(timeMs, macroEvent);
+        if (point is null)
+        {
+            return;
+        }
+
+        macroEvent.X = point.Value.X;
+        macroEvent.Y = point.Value.Y;
     }
 
     private bool TryNormalizeEditedPair(int startIndex, int endIndex, ref long startMs, ref long endMs)
@@ -759,10 +785,14 @@ public sealed class MacroTrimEditorForm : Form
             : insideExisting;
     }
 
-    private Point? GetPointAtTime(long timeMs)
+    private Point? GetPointAtTime(long timeMs, params MacroEvent[] excludedEvents)
     {
+        var excluded = excludedEvents.Length == 0
+            ? null
+            : new HashSet<MacroEvent>(excludedEvents);
         var points = _events
             .Where(IsDrawablePoint)
+            .Where(item => excluded is null || !excluded.Contains(item))
             .OrderBy(item => item.TimeOffsetMs)
             .ToList();
         if (points.Count == 0)
