@@ -42,6 +42,7 @@ public partial class Form1 : Form
     private Button _playButton = null!;
     private Button _editButton = null!;
     private Button _deleteButton = null!;
+    private Button _duplicateButton = null!;
     private Button _previewButton = null!;
     private FixedColumnListView _macroList = null!;
     private Label _summaryLabel = null!;
@@ -53,6 +54,9 @@ public partial class Form1 : Form
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
     private TextBox _recordingStopHotkeyBox = null!;
+    private Button _hotkeySetButton = null!;
+    private Button _emergencyHotkeySetButton = null!;
+    private Button _recordingStopHotkeySetButton = null!;
     private ComboBox _recordingModeBox = null!;
     private ComboBox _densityBox = null!;
     private NumericUpDown _eventIntervalBox = null!;
@@ -264,6 +268,7 @@ public partial class Form1 : Form
         _playButton = CreateButton("再生", PlayButtonOnClick);
         _previewButton = CreateButton("プレビュー", PreviewButtonOnClick);
         _editButton = CreateButton("編集", EditButtonOnClick);
+        _duplicateButton = CreateButton("複製", DuplicateButtonOnClick);
         _deleteButton = CreateButton("削除", DeleteButtonOnClick, ButtonTone.Danger);
         topPanel.Controls.AddRange(new Control[]
         {
@@ -272,6 +277,7 @@ public partial class Form1 : Form
             _playButton,
             _previewButton,
             _editButton,
+            _duplicateButton,
             _deleteButton
         });
 
@@ -341,23 +347,32 @@ public partial class Form1 : Form
         rightPanel.Controls.Add(macroGroup, 0, 0);
         AddLabeledControl(macroGroup, "名前", _nameBox = new TextBox(), 24, 105);
         _nameBox.TextChanged += NameBoxOnTextChanged;
-        AddLabeledControl(macroGroup, "ショートカット", _hotkeyBox = new TextBox { ReadOnly = true }, 58, 105);
-        _hotkeyBox.KeyDown += HotkeyBoxOnKeyDown;
-        _hotkeyBox.Enter += HotkeyInputOnEnter;
-        _hotkeyBox.Leave += HotkeyInputOnLeave;
-        AddLabeledControl(macroGroup, "緊急停止", _emergencyHotkeyBox = new TextBox { ReadOnly = true }, 92, 105);
+        AddLabeledControlWithButton(
+            macroGroup,
+            "ショートカット",
+            _hotkeyBox = new TextBox { ReadOnly = true, TabStop = false },
+            _hotkeySetButton = CreateInlineButton("設定", MacroHotkeySetButtonOnClick),
+            58,
+            105);
+        AddLabeledControlWithButton(
+            macroGroup,
+            "緊急停止",
+            _emergencyHotkeyBox = new TextBox { ReadOnly = true, TabStop = false },
+            _emergencyHotkeySetButton = CreateInlineButton("設定", EmergencyHotkeySetButtonOnClick),
+            92,
+            105);
         _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
-        _emergencyHotkeyBox.KeyDown += EmergencyHotkeyBoxOnKeyDown;
-        _emergencyHotkeyBox.Enter += HotkeyInputOnEnter;
-        _emergencyHotkeyBox.Leave += HotkeyInputOnLeave;
-        AddLabeledControl(macroGroup, "記録停止", _recordingStopHotkeyBox = new TextBox { ReadOnly = true }, 126, 105);
+        AddLabeledControlWithButton(
+            macroGroup,
+            "記録停止",
+            _recordingStopHotkeyBox = new TextBox { ReadOnly = true, TabStop = false },
+            _recordingStopHotkeySetButton = CreateInlineButton("設定", RecordingStopHotkeySetButtonOnClick),
+            126,
+            105);
         _recordingStopHotkeyBox.Text = _recordingStopHotkey.ToString();
-        _recordingStopHotkeyBox.KeyDown += RecordingStopHotkeyBoxOnKeyDown;
-        _recordingStopHotkeyBox.Enter += HotkeyInputOnEnter;
-        _recordingStopHotkeyBox.Leave += HotkeyInputOnLeave;
         macroGroup.Controls.Add(new Label
         {
-            Text = "入力欄を選択してキーを押す。Backspace/Deleteで解除。",
+            Text = "設定ボタンでショートカットを変更。Backspace/Deleteで解除。",
             Location = new Point(12, 166),
             Size = new Size(500, 24),
             ForeColor = UiMutedText,
@@ -622,6 +637,38 @@ public partial class Form1 : Form
         return label;
     }
 
+    private static Label AddLabeledControlWithButton(
+        Control parent,
+        string labelText,
+        Control control,
+        Button button,
+        int y,
+        int labelWidth)
+    {
+        var label = AddLabeledControl(parent, labelText, control, y, labelWidth);
+        const int buttonWidth = 58;
+        button.Location = new Point(parent.Width - buttonWidth - 12, y - 1);
+        button.Size = new Size(buttonWidth, 25);
+        button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        control.Width = Math.Max(80, parent.Width - labelWidth - buttonWidth - 48);
+        parent.Controls.Add(button);
+        return label;
+    }
+
+    private static Button CreateInlineButton(string text, EventHandler onClick)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Width = 58,
+            Height = 25,
+            Margin = new Padding(0)
+        };
+        button.Click += onClick;
+        StyleButton(button, ButtonTone.Normal);
+        return button;
+    }
+
     private static void StyleInputControl(Control control)
     {
         control.BackColor = UiPanelBack;
@@ -660,7 +707,11 @@ public partial class Form1 : Form
         StyleButton(_playButton, ButtonTone.Normal);
         StyleButton(_previewButton, ButtonTone.Normal);
         StyleButton(_editButton, ButtonTone.Normal);
+        StyleButton(_duplicateButton, ButtonTone.Normal);
         StyleButton(_deleteButton, ButtonTone.Danger);
+        StyleButton(_hotkeySetButton, ButtonTone.Normal);
+        StyleButton(_emergencyHotkeySetButton, ButtonTone.Normal);
+        StyleButton(_recordingStopHotkeySetButton, ButtonTone.Normal);
         UpdateThemeMenuChecks();
         ApplyWindowDarkMode();
         Invalidate(true);
@@ -905,9 +956,12 @@ public partial class Form1 : Form
     private void ConfigureParameterTooltips()
     {
         _toolTip.SetToolTip(_nameBox, "マクロ一覧に表示する名前です。動作には影響しません。");
-        _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。入力欄を選んでキーを押します。Backspace/Deleteで解除できます。");
-        _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。Backspace/Deleteで既定値に戻します。");
-        _toolTip.SetToolTip(_recordingStopHotkeyBox, "記録中だけ使う停止キーです。停止キー自体は記録データから除外します。Backspace/Deleteで既定値に戻します。");
+        _toolTip.SetToolTip(_hotkeyBox, "このマクロを再生するショートカットです。右側の設定ボタンから変更します。");
+        _toolTip.SetToolTip(_hotkeySetButton, "ショートカット設定画面を開きます。Backspace/Deleteで解除、Escでキャンセルできます。");
+        _toolTip.SetToolTip(_emergencyHotkeyBox, "記録待ち・記録中・再生中の処理を即座に止めるホットキーです。右側の設定ボタンから変更します。");
+        _toolTip.SetToolTip(_emergencyHotkeySetButton, "緊急停止キーの設定画面を開きます。Backspace/Deleteで既定値に戻します。");
+        _toolTip.SetToolTip(_recordingStopHotkeyBox, "記録中だけ使う停止キーです。停止キー自体は記録データから除外します。");
+        _toolTip.SetToolTip(_recordingStopHotkeySetButton, "記録停止キーの設定画面を開きます。Backspace/Deleteで既定値に戻します。");
         _toolTip.SetToolTip(_recordingModeBox, "完全記録は操作時刻をそのまま残します。イベント間隔一定はクリックやキー入力の間隔を指定msへ整えます。");
         _toolTip.SetToolTip(_densityBox, "記録密度のプリセットです。軽量は記録/再生60Hz、標準は記録200Hz/再生は画面Hz、高精度は記録/再生1000Hzです。");
         _toolTip.SetToolTip(_eventIntervalBox, "イベント間隔一定で使う基準間隔です。押下/解放ペア以外の次イベントまでの時間になります。");
@@ -1100,7 +1154,7 @@ public partial class Form1 : Form
     private void DeleteButtonOnClick(object? sender, EventArgs e)
     {
         var macro = GetSelectedMacro();
-        if (macro is null)
+        if (macro is null || _recorder.IsRecording || _player.IsPlaying || IsCountingDown)
         {
             return;
         }
@@ -1122,6 +1176,26 @@ public partial class Form1 : Form
         RefreshHotkeys();
         AutoSaveMacros();
         SetStatus("マクロを削除しました。");
+    }
+
+    private void DuplicateButtonOnClick(object? sender, EventArgs e)
+    {
+        var macro = GetSelectedMacro();
+        if (macro is null || _recorder.IsRecording || _player.IsPlaying || IsCountingDown)
+        {
+            return;
+        }
+
+        var copy = CloneMacro(macro);
+        copy.Id = Guid.NewGuid();
+        copy.Name = CreateCopyName(macro.Name);
+        copy.IsEnabled = false;
+        _macros.Add(copy);
+        RefreshMacroList(copy.Id);
+        RefreshSummary(copy);
+        RefreshHotkeys();
+        AutoSaveMacros();
+        SetStatus("マクロを複製しました。複製したマクロは無効状態です。");
     }
 
     private void SaveButtonOnClick(object? sender, EventArgs e)
@@ -1621,6 +1695,13 @@ public partial class Form1 : Form
 
     private void MacroListOnKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.KeyCode == Keys.Delete)
+        {
+            e.SuppressKeyPress = true;
+            DeleteButtonOnClick(sender, EventArgs.Empty);
+            return;
+        }
+
         if (e.KeyCode != Keys.Space)
         {
             return;
@@ -1687,63 +1768,48 @@ public partial class Form1 : Form
         AutoSaveMacros();
     }
 
-    private void HotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
+    private void MacroHotkeySetButtonOnClick(object? sender, EventArgs e)
     {
-        e.SuppressKeyPress = true;
         var macro = GetSelectedMacro();
         if (macro is null)
         {
             return;
         }
 
-        if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin)
+        var captured = CaptureHotkey("ショートカット設定", "このマクロを再生するキーを押してください。", macro.Hotkey);
+        if (captured is null)
         {
             return;
         }
 
         var previousHotkey = macro.Hotkey;
-        if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
+        var newHotkey = captured;
+        var conflicts = GetEnabledHotkeyConflicts(macro, newHotkey);
+        if (macro.IsEnabled && conflicts.Count > 0)
         {
-            macro.Hotkey = new HotkeyGesture();
-        }
-        else
-        {
-            var newHotkey = new HotkeyGesture
+            var conflictNames = string.Join(", ", conflicts.Select(item => item.Name));
+            var result = MessageBox.Show(
+                this,
+                $"同じショートカットを使っている有効マクロがあります。\r\n\r\n既存: {conflictNames}\r\n\r\n既存マクロを無効化して登録しますか？",
+                "ショートカット重複",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.Yes)
             {
-                Ctrl = e.Control,
-                Alt = e.Alt,
-                Shift = e.Shift,
-                Key = e.KeyCode
-            };
-
-            var conflicts = GetEnabledHotkeyConflicts(macro, newHotkey);
-            if (macro.IsEnabled && conflicts.Count > 0)
-            {
-                var conflictNames = string.Join(", ", conflicts.Select(item => item.Name));
-                var result = MessageBox.Show(
-                    this,
-                    $"同じショートカットを使っている有効マクロがあります。\r\n\r\n既存: {conflictNames}\r\n\r\n既存マクロを無効化して登録しますか？",
-                    "ショートカット重複",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button2);
-                if (result != DialogResult.Yes)
-                {
-                    macro.Hotkey = previousHotkey;
-                    _hotkeyBox.Text = macro.Hotkey.ToString();
-                    SetStatus("ショートカット登録を取り消しました。");
-                    return;
-                }
-
-                foreach (var conflict in conflicts)
-                {
-                    conflict.IsEnabled = false;
-                }
+                macro.Hotkey = previousHotkey;
+                _hotkeyBox.Text = macro.Hotkey.ToString();
+                SetStatus("ショートカット登録を取り消しました。");
+                return;
             }
 
-            macro.Hotkey = newHotkey;
+            foreach (var conflict in conflicts)
+            {
+                conflict.IsEnabled = false;
+            }
         }
 
+        macro.Hotkey = newHotkey;
         _hotkeyBox.Text = macro.Hotkey.ToString();
         RefreshMacroList(macro.Id);
         RefreshSummary(macro);
@@ -1751,70 +1817,46 @@ public partial class Form1 : Form
         AutoSaveMacros();
     }
 
-    private void HotkeyInputOnEnter(object? sender, EventArgs e)
+    private void EmergencyHotkeySetButtonOnClick(object? sender, EventArgs e)
     {
-        _hotkeys.UnregisterAll();
-    }
-
-    private void HotkeyInputOnLeave(object? sender, EventArgs e)
-    {
-        RefreshHotkeys();
-    }
-
-    private void EmergencyHotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
-    {
-        e.SuppressKeyPress = true;
-
-        if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin)
+        var captured = CaptureHotkey("緊急停止キー設定", "緊急停止に使うキーを押してください。", _emergencyStopHotkey);
+        if (captured is null)
         {
             return;
         }
 
-        if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
-        {
-            _emergencyStopHotkey = CreateDefaultEmergencyHotkey();
-        }
-        else
-        {
-            _emergencyStopHotkey = new HotkeyGesture
-            {
-                Ctrl = e.Control,
-                Alt = e.Alt,
-                Shift = e.Shift,
-                Key = e.KeyCode
-            };
-        }
-
+        _emergencyStopHotkey = captured.IsEmpty ? CreateDefaultEmergencyHotkey() : captured;
         _emergencyHotkeyBox.Text = _emergencyStopHotkey.ToString();
         RefreshHotkeys();
+        AutoSaveMacros();
     }
 
-    private void RecordingStopHotkeyBoxOnKeyDown(object? sender, KeyEventArgs e)
+    private void RecordingStopHotkeySetButtonOnClick(object? sender, EventArgs e)
     {
-        e.SuppressKeyPress = true;
-
-        if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin)
+        var captured = CaptureHotkey("記録停止キー設定", "記録停止に使うキーを押してください。", _recordingStopHotkey);
+        if (captured is null)
         {
             return;
         }
 
-        if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
-        {
-            _recordingStopHotkey = CreateDefaultRecordingStopHotkey();
-        }
-        else
-        {
-            _recordingStopHotkey = new HotkeyGesture
-            {
-                Ctrl = e.Control,
-                Alt = e.Alt,
-                Shift = e.Shift,
-                Key = e.KeyCode
-            };
-        }
-
+        _recordingStopHotkey = captured.IsEmpty ? CreateDefaultRecordingStopHotkey() : captured;
         _recordingStopHotkeyBox.Text = _recordingStopHotkey.ToString();
         RefreshHotkeys();
+        AutoSaveMacros();
+    }
+
+    private HotkeyGesture? CaptureHotkey(string title, string instruction, HotkeyGesture current)
+    {
+        _hotkeys.UnregisterAll();
+        try
+        {
+            using var dialog = new HotkeyCaptureDialog(title, instruction, current);
+            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.CapturedHotkey : null;
+        }
+        finally
+        {
+            RefreshHotkeys();
+        }
     }
 
     private void LoadDefaultMacros()
@@ -1992,6 +2034,89 @@ public partial class Form1 : Form
         return _macroList.SelectedItems[0].Tag as Macro;
     }
 
+    private static Macro CloneMacro(Macro source)
+    {
+        return new Macro
+        {
+            Id = source.Id,
+            Name = source.Name,
+            IsEnabled = source.IsEnabled,
+            PlaybackSpeedPercent = source.PlaybackSpeedPercent,
+            TrimStartMs = source.TrimStartMs,
+            TrimEndMs = source.TrimEndMs,
+            Hotkey = CloneHotkey(source.Hotkey),
+            Recording = CloneRecording(source.Recording),
+            Noise = CloneNoise(source.Noise),
+            Events = source.Events.Select(CloneEvent).ToList()
+        };
+    }
+
+    private string CreateCopyName(string originalName)
+    {
+        var baseName = $"{originalName} コピー";
+        var name = baseName;
+        var index = 2;
+        while (_macros.Any(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            name = $"{baseName} {index}";
+            index++;
+        }
+
+        return name;
+    }
+
+    private static HotkeyGesture CloneHotkey(HotkeyGesture source)
+    {
+        return new HotkeyGesture
+        {
+            Ctrl = source.Ctrl,
+            Alt = source.Alt,
+            Shift = source.Shift,
+            Win = source.Win,
+            Key = source.Key
+        };
+    }
+
+    private static RecordingOptions CloneRecording(RecordingOptions source)
+    {
+        return new RecordingOptions
+        {
+            Name = source.Name,
+            MousePollingRateHz = source.MousePollingRateHz,
+            MoveMinDistancePx = source.MoveMinDistancePx,
+            DragMoveMinDistancePx = source.DragMoveMinDistancePx,
+            TimingMode = source.TimingMode,
+            EventIntervalMs = source.EventIntervalMs,
+            HoldDurationMs = source.HoldDurationMs
+        };
+    }
+
+    private static NoiseSettings CloneNoise(NoiseSettings source)
+    {
+        return new NoiseSettings
+        {
+            CoordinateJitterPx = source.CoordinateJitterPx,
+            TimeJitterPercent = source.TimeJitterPercent,
+            TimeJitterMs = source.TimeJitterMs,
+            AccelerationJitterPercent = source.AccelerationJitterPercent,
+            TrajectoryJitterPx = source.TrajectoryJitterPx
+        };
+    }
+
+    private static MacroEvent CloneEvent(MacroEvent source)
+    {
+        return new MacroEvent
+        {
+            Kind = source.Kind,
+            TimeOffsetMs = source.TimeOffsetMs,
+            X = source.X,
+            Y = source.Y,
+            Button = source.Button,
+            WheelDelta = source.WheelDelta,
+            KeyCode = source.KeyCode
+        };
+    }
+
     private void RefreshMacroList(Guid? selectedId = null)
     {
         _macroList.BeginUpdate();
@@ -2051,12 +2176,6 @@ public partial class Form1 : Form
             return;
         }
 
-        if (IsHotkeyInputFocused())
-        {
-            _hotkeys.UnregisterAll();
-            return;
-        }
-
         try
         {
             _hotkeys.RegisterAll(Handle, _macros, _emergencyStopHotkey, _recordingStopHotkey);
@@ -2111,13 +2230,6 @@ public partial class Form1 : Form
             && left.Key == right.Key;
     }
 
-    private bool IsHotkeyInputFocused()
-    {
-        return _hotkeyBox.Focused
-            || _emergencyHotkeyBox.Focused
-            || _recordingStopHotkeyBox.Focused;
-    }
-
     private void UpdateButtons()
     {
         var recording = _recorder.IsRecording;
@@ -2130,7 +2242,11 @@ public partial class Form1 : Form
         _playButton.Enabled = selected && !recording && !playing && !countingDown;
         _editButton.Enabled = selected && !recording && !playing && !countingDown;
         _previewButton.Enabled = selected && !recording && !playing && !countingDown;
+        _duplicateButton.Enabled = selected && !recording && !playing && !countingDown;
         _deleteButton.Enabled = selected && !recording && !playing && !countingDown;
+        _hotkeySetButton.Enabled = selected && !recording && !playing && !countingDown;
+        _emergencyHotkeySetButton.Enabled = !recording && !playing && !countingDown;
+        _recordingStopHotkeySetButton.Enabled = !recording && !playing && !countingDown;
     }
 
     private void SetStatus(string message)
@@ -2309,6 +2425,98 @@ public partial class Form1 : Form
             }
 
             return false;
+        }
+    }
+
+    private sealed class HotkeyCaptureDialog : Form
+    {
+        private readonly Label _currentLabel = new();
+
+        public HotkeyCaptureDialog(string title, string instruction, HotkeyGesture current)
+        {
+            CapturedHotkey = CloneHotkey(current);
+            Text = title;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            KeyPreview = true;
+            ClientSize = new Size(420, 170);
+            Font = new Font(UiFontName, 9F, FontStyle.Regular, GraphicsUnit.Point);
+            BackColor = UiPanelBack;
+            ForeColor = UiText;
+
+            Controls.Add(new Label
+            {
+                Text = title,
+                Location = new Point(18, 16),
+                Size = new Size(380, 24),
+                Font = new Font(Font.FontFamily, 11F, FontStyle.Bold),
+                ForeColor = UiText,
+                BackColor = Color.Transparent
+            });
+            Controls.Add(new Label
+            {
+                Text = instruction + "\r\nBackspace/Delete: 解除   Esc: キャンセル",
+                Location = new Point(18, 48),
+                Size = new Size(380, 42),
+                ForeColor = UiMutedText,
+                BackColor = Color.Transparent
+            });
+
+            _currentLabel.Location = new Point(18, 102);
+            _currentLabel.Size = new Size(380, 24);
+            _currentLabel.ForeColor = UiText;
+            _currentLabel.BackColor = Color.Transparent;
+            Controls.Add(_currentLabel);
+
+            var cancelButton = CreateInlineButton("キャンセル", (_, _) => DialogResult = DialogResult.Cancel);
+            cancelButton.Location = new Point(ClientSize.Width - 104, ClientSize.Height - 38);
+            cancelButton.Size = new Size(86, 26);
+            cancelButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+            Controls.Add(cancelButton);
+
+            UpdateCurrentLabel();
+        }
+
+        public HotkeyGesture CapturedHotkey { get; private set; }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            e.SuppressKeyPress = true;
+            if (e.KeyCode == Keys.Escape)
+            {
+                DialogResult = DialogResult.Cancel;
+                return;
+            }
+
+            if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin)
+            {
+                return;
+            }
+
+            if (e.KeyCode is Keys.Back or Keys.Delete)
+            {
+                CapturedHotkey = new HotkeyGesture();
+                DialogResult = DialogResult.OK;
+                return;
+            }
+
+            CapturedHotkey = new HotkeyGesture
+            {
+                Ctrl = e.Control,
+                Alt = e.Alt,
+                Shift = e.Shift,
+                Key = e.KeyCode
+            };
+            DialogResult = DialogResult.OK;
+        }
+
+        private void UpdateCurrentLabel()
+        {
+            var text = CapturedHotkey.IsEmpty ? "現在: 未設定" : $"現在: {CapturedHotkey}";
+            _currentLabel.Text = text;
         }
     }
 
