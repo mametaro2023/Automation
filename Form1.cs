@@ -1534,13 +1534,44 @@ public partial class Form1 : Form
             return;
         }
 
-        const int nameWidth = 150;
-        const int shortcutWidth = 100;
-        const int countWidth = 45;
-        const int enabledWidth = 50;
-        var timeWidth = Math.Max(
-            88,
-            _macroList.ClientSize.Width - nameWidth - shortcutWidth - countWidth - enabledWidth - 1);
+        var countWidth = 42;
+        var enabledWidth = 38;
+        var availableWidth = Math.Max(0, _macroList.ClientSize.Width - 5);
+        var shortcutWidth = availableWidth >= 380 ? 92 : 78;
+        var timeWidth = availableWidth >= 380 ? 78 : 68;
+        var nameWidth = availableWidth - shortcutWidth - countWidth - timeWidth - enabledWidth;
+        if (nameWidth < 90)
+        {
+            var shortage = 90 - nameWidth;
+            var shortcutReduction = Math.Min(shortage, Math.Max(0, shortcutWidth - 58));
+            shortcutWidth -= shortcutReduction;
+            shortage -= shortcutReduction;
+            var timeReduction = Math.Min(shortage, Math.Max(0, timeWidth - 58));
+            timeWidth -= timeReduction;
+            shortage -= timeReduction;
+            nameWidth = Math.Max(60, 90 - shortage);
+        }
+
+        var overflow = nameWidth + shortcutWidth + countWidth + timeWidth + enabledWidth - availableWidth;
+        if (overflow > 0)
+        {
+            var nameReduction = Math.Min(overflow, Math.Max(0, nameWidth - 30));
+            nameWidth -= nameReduction;
+            overflow -= nameReduction;
+            var shortcutReduction = Math.Min(overflow, Math.Max(0, shortcutWidth - 1));
+            shortcutWidth -= shortcutReduction;
+            overflow -= shortcutReduction;
+            var timeReduction = Math.Min(overflow, Math.Max(0, timeWidth - 40));
+            timeWidth -= timeReduction;
+            overflow -= timeReduction;
+            var countReduction = Math.Min(overflow, Math.Max(0, countWidth - 25));
+            countWidth -= countReduction;
+            overflow -= countReduction;
+            var enabledReduction = Math.Min(overflow, Math.Max(0, enabledWidth - 28));
+            enabledWidth -= enabledReduction;
+            overflow -= enabledReduction;
+            timeWidth = Math.Max(0, timeWidth - overflow);
+        }
 
         _updatingMacroListColumns = true;
         try
