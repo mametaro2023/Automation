@@ -13,6 +13,8 @@ public sealed class AppSettings
 {
     public AppThemeMode ThemeMode { get; set; } = AppThemeMode.System;
     public string? MacroFilePath { get; set; }
+    public bool CaptureScreenshots { get; set; } = true;
+    public bool ShowEditorScreenshots { get; set; } = true;
 }
 
 public static class AppSettingsStore

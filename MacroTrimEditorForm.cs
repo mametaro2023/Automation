@@ -29,7 +29,7 @@ public sealed class MacroTrimEditorForm : Form
     private readonly long _initialTrimStartMs;
     private readonly long _initialTrimEndMs;
 
-    public MacroTrimEditorForm(Macro macro)
+    public MacroTrimEditorForm(Macro macro, bool showScreenshotBackground = true, string? screenshotPath = null)
     {
         _events = macro.Events
             .Select(CloneEvent)
@@ -53,6 +53,10 @@ public sealed class MacroTrimEditorForm : Form
         _endTrack = CreateTrackBar(duration);
         _startTrack.Value = (int)Math.Min(int.MaxValue, _initialTrimStartMs);
         _endTrack.Value = (int)Math.Min(int.MaxValue, _initialTrimEndMs);
+        if (showScreenshotBackground)
+        {
+            _canvas.SetBackground(LoadScreenshotBackground(screenshotPath, macro));
+        }
 
         BuildInterface();
         WireEvents();
@@ -62,6 +66,12 @@ public sealed class MacroTrimEditorForm : Form
     public List<MacroEvent> EditedEvents { get; private set; } = new();
     public long TrimStartMs { get; private set; }
     public long? TrimEndMs { get; private set; }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        _canvas.DisposeBackground();
+        base.OnFormClosed(e);
+    }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -104,6 +114,32 @@ public sealed class MacroTrimEditorForm : Form
     private bool IsEditingValue()
     {
         return ActiveControl is NumericUpDown or TextBoxBase;
+    }
+
+    private static ScreenshotBackground? LoadScreenshotBackground(string? screenshotPath, Macro macro)
+    {
+        if (string.IsNullOrWhiteSpace(screenshotPath)
+            || !File.Exists(screenshotPath)
+            || macro.ScreenshotWidth <= 0
+            || macro.ScreenshotHeight <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new ScreenshotBackground(
+                Image.FromFile(screenshotPath),
+                new Rectangle(
+                    macro.ScreenshotX,
+                    macro.ScreenshotY,
+                    macro.ScreenshotWidth,
+                    macro.ScreenshotHeight));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void BuildInterface()
@@ -996,6 +1032,7 @@ public sealed class MacroTrimEditorForm : Form
     }
 
     private sealed record EditorSnapshot(List<MacroEvent> Events, int? SelectedIndex, int StartMs, int EndMs);
+    private sealed record ScreenshotBackground(Image Image, Rectangle Bounds);
 
     private sealed class MacroTimelineControl : Control
     {
@@ -1278,6 +1315,7 @@ public sealed class MacroTrimEditorForm : Form
     {
         private readonly List<MarkerHit> _markerHits = new();
         private List<MacroEvent> _events = new();
+        private ScreenshotBackground? _background;
         private long _startMs;
         private long _endMs;
         private int? _selectedIndex;
@@ -1289,6 +1327,19 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         public event Action<int>? EventSelected;
+
+        public void SetBackground(ScreenshotBackground? background)
+        {
+            _background?.Image.Dispose();
+            _background = background;
+            Invalidate();
+        }
+
+        public void DisposeBackground()
+        {
+            _background?.Image.Dispose();
+            _background = null;
+        }
 
         public void SetData(List<MacroEvent> events, long startMs, long endMs, int? selectedIndex)
         {
@@ -1342,8 +1393,16 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
-            var mapping = CreateMapping(drawable.Select(item => new Point(item.Event.X, item.Event.Y)).ToList());
+            var mappingPoints = drawable.Select(item => new Point(item.Event.X, item.Event.Y)).ToList();
+            if (_background is not null)
+            {
+                mappingPoints.Add(new Point(_background.Bounds.Left, _background.Bounds.Top));
+                mappingPoints.Add(new Point(_background.Bounds.Right, _background.Bounds.Bottom));
+            }
+
+            var mapping = CreateMapping(mappingPoints);
             DrawGrid(e.Graphics);
+            DrawBackground(e.Graphics, mapping.ToCanvas);
             DrawPath(e.Graphics, drawable.Select(item => item.Event).ToList(), mapping.ToCanvas, Color.FromArgb(70, Color.White), 2);
             DrawPath(
                 e.Graphics,
@@ -1471,6 +1530,42 @@ public sealed class MacroTrimEditorForm : Form
             {
                 graphics.DrawLine(pen, 0, y, Width, y);
             }
+        }
+
+        private void DrawBackground(Graphics graphics, Func<Point, Point> mapper)
+        {
+            if (_background is null)
+            {
+                return;
+            }
+
+            var topLeft = mapper(new Point(_background.Bounds.Left, _background.Bounds.Top));
+            var bottomRight = mapper(new Point(_background.Bounds.Right, _background.Bounds.Bottom));
+            var rect = Rectangle.FromLTRB(
+                Math.Min(topLeft.X, bottomRight.X),
+                Math.Min(topLeft.Y, bottomRight.Y),
+                Math.Max(topLeft.X, bottomRight.X),
+                Math.Max(topLeft.Y, bottomRight.Y));
+            if (rect.Width <= 0 || rect.Height <= 0)
+            {
+                return;
+            }
+
+            using var attributes = new System.Drawing.Imaging.ImageAttributes();
+            var matrix = new System.Drawing.Imaging.ColorMatrix
+            {
+                Matrix33 = 0.32f
+            };
+            attributes.SetColorMatrix(matrix, System.Drawing.Imaging.ColorMatrixFlag.Default, System.Drawing.Imaging.ColorAdjustType.Bitmap);
+            graphics.DrawImage(
+                _background.Image,
+                rect,
+                0,
+                0,
+                _background.Image.Width,
+                _background.Image.Height,
+                GraphicsUnit.Pixel,
+                attributes);
         }
 
         private CanvasMapping CreateMapping(List<Point> points)

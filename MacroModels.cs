@@ -48,6 +48,11 @@ public sealed class Macro
     public int PlaybackSpeedPercent { get; set; } = 100;
     public long TrimStartMs { get; set; }
     public long? TrimEndMs { get; set; }
+    public string? ScreenshotPath { get; set; }
+    public int ScreenshotX { get; set; }
+    public int ScreenshotY { get; set; }
+    public int ScreenshotWidth { get; set; }
+    public int ScreenshotHeight { get; set; }
     public HotkeyGesture Hotkey { get; set; } = new();
     public RecordingOptions Recording { get; set; } = RecordingOptions.Standard();
     public NoiseSettings Noise { get; set; } = new();

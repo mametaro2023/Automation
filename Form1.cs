@@ -69,6 +69,8 @@ public partial class Form1 : Form
     private NumericUpDown _trajectoryNoiseBox = null!;
     private NumericUpDown _previewPathCountBox = null!;
     private NumericUpDown _playbackSpeedBox = null!;
+    private CheckBox _captureScreenshotBox = null!;
+    private CheckBox _showScreenshotBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
     private SplitContainer _mainSplit = null!;
     private Control _advancedSettingsPanel = null!;
@@ -85,6 +87,7 @@ public partial class Form1 : Form
     private bool _restoreWindowAfterRecording;
     private bool _updatingSelection;
     private bool _updatingMacroListColumns;
+    private PendingScreenshot? _pendingScreenshot;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int SetPreferredAppModeDelegate(int appMode);
@@ -222,9 +225,6 @@ public partial class Form1 : Form
             RenderMode = ToolStripRenderMode.System
         };
         var fileMenu = new ToolStripMenuItem("ファイル");
-        fileMenu.DropDownItems.Add("読込...", null, LoadButtonOnClick);
-        fileMenu.DropDownItems.Add("出力...", null, SaveButtonOnClick);
-        fileMenu.DropDownItems.Add(new ToolStripSeparator());
         fileMenu.DropDownItems.Add("保存場所を表示", null, ShowMacroStorageLocationOnClick);
         fileMenu.DropDownItems.Add("保存場所を変更...", null, ChangeMacroStorageLocationOnClick);
         var viewMenu = new ToolStripMenuItem("表示");
@@ -336,7 +336,7 @@ public partial class Form1 : Form
             BackColor = UiWindowBack
         };
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 232));
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 202));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
         rightPanel.RowStyles.Add(_advancedSettingsRow);
@@ -410,6 +410,36 @@ public partial class Form1 : Form
             Value = 100
         }, 104, 118);
         _playbackSpeedBox.ValueChanged += PlaybackSpeedBoxOnValueChanged;
+        _captureScreenshotBox = new CheckBox
+        {
+            Text = "記録時にスクリーンショットを保存",
+            AutoSize = true,
+            Checked = _settings.CaptureScreenshots,
+            Location = new Point(123, 136),
+            ForeColor = UiMutedText,
+            BackColor = Color.Transparent
+        };
+        _captureScreenshotBox.CheckedChanged += (_, _) =>
+        {
+            _settings.CaptureScreenshots = _captureScreenshotBox.Checked;
+            AppSettingsStore.Save(_settings);
+        };
+        recordGroup.Controls.Add(_captureScreenshotBox);
+        _showScreenshotBox = new CheckBox
+        {
+            Text = "編集画面で背景表示",
+            AutoSize = true,
+            Checked = _settings.ShowEditorScreenshots,
+            Location = new Point(123, 162),
+            ForeColor = UiMutedText,
+            BackColor = Color.Transparent
+        };
+        _showScreenshotBox.CheckedChanged += (_, _) =>
+        {
+            _settings.ShowEditorScreenshots = _showScreenshotBox.Checked;
+            AppSettingsStore.Save(_settings);
+        };
+        recordGroup.Controls.Add(_showScreenshotBox);
 
         var advancedToggle = new CheckBox
         {
@@ -712,6 +742,18 @@ public partial class Form1 : Form
         StyleButton(_hotkeySetButton, ButtonTone.Normal);
         StyleButton(_emergencyHotkeySetButton, ButtonTone.Normal);
         StyleButton(_recordingStopHotkeySetButton, ButtonTone.Normal);
+        if (_captureScreenshotBox is not null)
+        {
+            _captureScreenshotBox.ForeColor = UiMutedText;
+            _captureScreenshotBox.BackColor = Color.Transparent;
+        }
+
+        if (_showScreenshotBox is not null)
+        {
+            _showScreenshotBox.ForeColor = UiMutedText;
+            _showScreenshotBox.BackColor = Color.Transparent;
+        }
+
         UpdateThemeMenuChecks();
         ApplyWindowDarkMode();
         Invalidate(true);
@@ -968,6 +1010,8 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_holdDurationBox, "イベント間隔一定で使う押下から解放までの時間です。クリックやキー押下の長さを決めます。");
         _toolTip.SetToolTip(_countdownBox, "記録ボタンを押してから実際に記録開始するまでの待ち時間です。操作対象へ移動する余裕を作ります。");
         _toolTip.SetToolTip(_playbackSpeedBox, "選択中マクロの再生速度です。100%が記録時と同じ速度、200%は2倍速、50%は半分の速度です。");
+        _toolTip.SetToolTip(_captureScreenshotBox, "記録開始直前の仮想デスクトップ全体を保存し、編集画面の背景に使います。");
+        _toolTip.SetToolTip(_showScreenshotBox, "保存済みスクリーンショットを編集画面の軌道背景として半透明表示します。");
         _toolTip.SetToolTip(_coordNoiseBox, "クリック押下/解放の座標に加える小さな揺れです。重要点なので大きくしすぎないでください。");
         _toolTip.SetToolTip(_timeNoiseBox, "クリックやキー入力の間隔に加える時間揺れです。機械的な一定間隔を避けます。");
         _toolTip.SetToolTip(_trajectoryNoiseBox, "クリック以外のマウス軌道に加える曲がり具合です。大きいほど毎回違う軌道になります。");
@@ -1008,6 +1052,7 @@ public partial class Form1 : Form
             _countdownSound.PlayStart();
             countdownOverlay.ShowStart();
             await Task.Delay(250, token);
+            countdownOverlay.Hide();
             StartRecording();
         }
         catch (OperationCanceledException)
@@ -1031,6 +1076,7 @@ public partial class Form1 : Form
         _recorder.ShouldIgnoreMousePoint = null;
         try
         {
+            _pendingScreenshot = _settings.CaptureScreenshots ? CaptureRecordingScreenshot() : null;
             _recorder.Start(options);
             ShowRecordingOverlay();
             SetStatus($"記録中: {options.Name} / {options.MousePollingRateHz}Hz");
@@ -1038,6 +1084,7 @@ public partial class Form1 : Form
         }
         catch (Exception ex)
         {
+            DeletePendingScreenshot();
             HideRecordingOverlay();
             RestoreAfterRecording();
             SetStatus(ex.Message);
@@ -1136,7 +1183,7 @@ public partial class Form1 : Form
             return;
         }
 
-        using var editor = new MacroTrimEditorForm(macro);
+        using var editor = new MacroTrimEditorForm(macro, _settings.ShowEditorScreenshots, ResolveScreenshotPath(macro));
         if (editor.ShowDialog(this) != DialogResult.OK)
         {
             return;
@@ -1149,6 +1196,197 @@ public partial class Form1 : Form
         RefreshSummary(macro);
         AutoSaveMacros();
         SetStatus("マクロをトリミングしました。");
+    }
+
+    private PendingScreenshot? CaptureRecordingScreenshot()
+    {
+        try
+        {
+            var bounds = GetVirtualScreenBounds();
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                return null;
+            }
+
+            var directory = GetScreenshotDirectory();
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, $"{Guid.NewGuid():N}.png");
+            using var bitmap = new Bitmap(bounds.Width, bounds.Height);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            }
+
+            bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            return new PendingScreenshot(path, bounds);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"スクリーンショット保存失敗: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void ApplyPendingScreenshot(Macro macro)
+    {
+        if (_pendingScreenshot is null)
+        {
+            return;
+        }
+
+        macro.ScreenshotPath = GetRelativeScreenshotPath(_pendingScreenshot.Path);
+        macro.ScreenshotX = _pendingScreenshot.Bounds.X;
+        macro.ScreenshotY = _pendingScreenshot.Bounds.Y;
+        macro.ScreenshotWidth = _pendingScreenshot.Bounds.Width;
+        macro.ScreenshotHeight = _pendingScreenshot.Bounds.Height;
+        _pendingScreenshot = null;
+    }
+
+    private void DeletePendingScreenshot()
+    {
+        if (_pendingScreenshot is null)
+        {
+            return;
+        }
+
+        TryDeleteFile(_pendingScreenshot.Path);
+        _pendingScreenshot = null;
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // スクリーンショットの削除失敗はマクロ操作を妨げない。
+        }
+    }
+
+    private string GetScreenshotDirectory()
+    {
+        var macroDirectory = Path.GetDirectoryName(_macroStorePath);
+        return Path.Combine(
+            string.IsNullOrWhiteSpace(macroDirectory) ? MacroStore.DefaultDirectory : macroDirectory,
+            "screenshots");
+    }
+
+    private string GetRelativeScreenshotPath(string path)
+    {
+        var macroDirectory = Path.GetDirectoryName(_macroStorePath);
+        if (string.IsNullOrWhiteSpace(macroDirectory))
+        {
+            return path;
+        }
+
+        return Path.GetRelativePath(macroDirectory, path);
+    }
+
+    private void MigrateScreenshotsForStorePath(string newMacroStorePath)
+    {
+        var currentMacroDirectory = Path.GetDirectoryName(_macroStorePath);
+        if (string.IsNullOrWhiteSpace(currentMacroDirectory))
+        {
+            currentMacroDirectory = MacroStore.DefaultDirectory;
+        }
+
+        var newMacroDirectory = Path.GetDirectoryName(newMacroStorePath);
+        if (string.IsNullOrWhiteSpace(newMacroDirectory))
+        {
+            newMacroDirectory = MacroStore.DefaultDirectory;
+        }
+
+        var newScreenshotDirectory = Path.Combine(newMacroDirectory, "screenshots");
+        Directory.CreateDirectory(newScreenshotDirectory);
+
+        foreach (var macro in _macros)
+        {
+            if (string.IsNullOrWhiteSpace(macro.ScreenshotPath))
+            {
+                continue;
+            }
+
+            var sourcePath = Path.IsPathRooted(macro.ScreenshotPath)
+                ? macro.ScreenshotPath
+                : Path.GetFullPath(Path.Combine(currentMacroDirectory, macro.ScreenshotPath));
+            if (!File.Exists(sourcePath))
+            {
+                continue;
+            }
+
+            var extension = Path.GetExtension(sourcePath);
+            var destinationPath = Path.Combine(
+                newScreenshotDirectory,
+                $"{Guid.NewGuid():N}{(string.IsNullOrWhiteSpace(extension) ? ".png" : extension)}");
+
+            if (!string.Equals(
+                    Path.GetFullPath(sourcePath),
+                    Path.GetFullPath(destinationPath),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                File.Copy(sourcePath, destinationPath, overwrite: false);
+            }
+
+            macro.ScreenshotPath = Path.GetRelativePath(newMacroDirectory, destinationPath);
+        }
+    }
+
+    private string ResolveScreenshotPath(Macro macro)
+    {
+        if (string.IsNullOrWhiteSpace(macro.ScreenshotPath))
+        {
+            return "";
+        }
+
+        if (Path.IsPathRooted(macro.ScreenshotPath))
+        {
+            return macro.ScreenshotPath;
+        }
+
+        var macroDirectory = Path.GetDirectoryName(_macroStorePath);
+        return Path.GetFullPath(Path.Combine(
+            string.IsNullOrWhiteSpace(macroDirectory) ? MacroStore.DefaultDirectory : macroDirectory,
+            macro.ScreenshotPath));
+    }
+
+    private void CopyScreenshotForDuplicate(Macro source, Macro copy)
+    {
+        var sourcePath = ResolveScreenshotPath(source);
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+        {
+            copy.ScreenshotPath = null;
+            copy.ScreenshotWidth = 0;
+            copy.ScreenshotHeight = 0;
+            return;
+        }
+
+        try
+        {
+            var directory = GetScreenshotDirectory();
+            Directory.CreateDirectory(directory);
+            var extension = Path.GetExtension(sourcePath);
+            var copyPath = Path.Combine(directory, $"{Guid.NewGuid():N}{(string.IsNullOrWhiteSpace(extension) ? ".png" : extension)}");
+            File.Copy(sourcePath, copyPath, overwrite: false);
+            copy.ScreenshotPath = GetRelativeScreenshotPath(copyPath);
+        }
+        catch
+        {
+            copy.ScreenshotPath = source.ScreenshotPath;
+        }
+    }
+
+    private static Rectangle GetVirtualScreenBounds()
+    {
+        var left = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
+        var top = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
+        var width = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN);
+        var height = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN);
+        return new Rectangle(left, top, Math.Max(1, width), Math.Max(1, height));
     }
 
     private void DeleteButtonOnClick(object? sender, EventArgs e)
@@ -1171,6 +1409,7 @@ public partial class Form1 : Form
             return;
         }
 
+        TryDeleteFile(ResolveScreenshotPath(macro));
         _macros.Remove(macro);
         RefreshMacroList();
         RefreshHotkeys();
@@ -1190,51 +1429,13 @@ public partial class Form1 : Form
         copy.Id = Guid.NewGuid();
         copy.Name = CreateCopyName(macro.Name);
         copy.IsEnabled = false;
+        CopyScreenshotForDuplicate(macro, copy);
         _macros.Add(copy);
         RefreshMacroList(copy.Id);
         RefreshSummary(copy);
         RefreshHotkeys();
         AutoSaveMacros();
         SetStatus("マクロを複製しました。複製したマクロは無効状態です。");
-    }
-
-    private void SaveButtonOnClick(object? sender, EventArgs e)
-    {
-        using var dialog = new SaveFileDialog
-        {
-            Filter = "マクロファイル (*.json)|*.json|すべてのファイル (*.*)|*.*",
-            DefaultExt = "json",
-            FileName = "macros.json"
-        };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-        {
-            return;
-        }
-
-        MacroStore.Save(dialog.FileName, _macros);
-        SetStatus($"出力しました: {dialog.FileName}");
-    }
-
-    private void LoadButtonOnClick(object? sender, EventArgs e)
-    {
-        using var dialog = new OpenFileDialog
-        {
-            Filter = "マクロファイル (*.json)|*.json|すべてのファイル (*.*)|*.*"
-        };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-        {
-            return;
-        }
-
-        _macros.Clear();
-        _macros.AddRange(MacroStore.Load(dialog.FileName));
-        var disabledDuplicates = DisableDuplicateEnabledHotkeys();
-        RefreshMacroList();
-        RefreshHotkeys();
-        AutoSaveMacros();
-        SetStatus(disabledDuplicates
-            ? $"読み込みました。ショートカット重複のため一部マクロを無効化しました: {dialog.FileName}"
-            : $"読み込みました: {dialog.FileName}");
     }
 
     private void ShowMacroStorageLocationOnClick(object? sender, EventArgs e)
@@ -1316,12 +1517,14 @@ public partial class Form1 : Form
                     return;
                 }
 
+                MigrateScreenshotsForStorePath(selectedPath);
                 SetMacroStorePath(selectedPath);
                 MacroStore.Save(_macroStorePath, _macros);
                 SetStatus($"保存場所を変更し、現在のマクロを保存しました: {_macroStorePath}");
                 return;
             }
 
+            MigrateScreenshotsForStorePath(selectedPath);
             SetMacroStorePath(selectedPath);
             MacroStore.Save(_macroStorePath, _macros);
             SetStatus($"保存場所を変更しました: {_macroStorePath}");
@@ -1366,6 +1569,7 @@ public partial class Form1 : Form
                     Noise = noise,
                     Events = events
                 };
+                ApplyPendingScreenshot(macro);
                 _macros.Add(macro);
                 RefreshMacroList(macro.Id);
                 AutoSaveMacros();
@@ -1373,6 +1577,7 @@ public partial class Form1 : Form
             }
             else
             {
+                DeletePendingScreenshot();
                 SetStatus("記録を停止しました。イベントはありません。");
             }
 
@@ -2044,6 +2249,11 @@ public partial class Form1 : Form
             PlaybackSpeedPercent = source.PlaybackSpeedPercent,
             TrimStartMs = source.TrimStartMs,
             TrimEndMs = source.TrimEndMs,
+            ScreenshotPath = source.ScreenshotPath,
+            ScreenshotX = source.ScreenshotX,
+            ScreenshotY = source.ScreenshotY,
+            ScreenshotWidth = source.ScreenshotWidth,
+            ScreenshotHeight = source.ScreenshotHeight,
             Hotkey = CloneHotkey(source.Hotkey),
             Recording = CloneRecording(source.Recording),
             Noise = CloneNoise(source.Noise),
@@ -2519,6 +2729,8 @@ public partial class Form1 : Form
             _currentLabel.Text = text;
         }
     }
+
+    private sealed record PendingScreenshot(string Path, Rectangle Bounds);
 
     private sealed class EmergencyStopOverlay : Control
     {
