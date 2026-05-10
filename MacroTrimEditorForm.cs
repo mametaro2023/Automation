@@ -1393,14 +1393,7 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
-            var mappingPoints = drawable.Select(item => new Point(item.Event.X, item.Event.Y)).ToList();
-            if (_background is not null)
-            {
-                mappingPoints.Add(new Point(_background.Bounds.Left, _background.Bounds.Top));
-                mappingPoints.Add(new Point(_background.Bounds.Right, _background.Bounds.Bottom));
-            }
-
-            var mapping = CreateMapping(mappingPoints);
+            var mapping = CreateMapping(drawable.Select(item => new Point(item.Event.X, item.Event.Y)).ToList());
             DrawGrid(e.Graphics);
             DrawBackground(e.Graphics, mapping.ToCanvas);
             DrawPath(e.Graphics, drawable.Select(item => item.Event).ToList(), mapping.ToCanvas, Color.FromArgb(70, Color.White), 2);
