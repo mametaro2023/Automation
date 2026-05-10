@@ -430,6 +430,7 @@ public sealed class MacroTrimEditorForm : Form
     {
         _canvas.EventSelected += SelectEvent;
         _timeline.EventSelected += SelectEvent;
+        _timeline.EventTimeEditPreview += TimelineOnEventTimeEditPreview;
         _timeline.EventTimeEdited += TimelineOnEventTimeEdited;
         _timeline.EventTimeEditCompleted += () => _timelineEditUndoSaved = false;
         _timeline.CurrentTimeSelected += SetCurrentTime;
@@ -614,9 +615,16 @@ public sealed class MacroTrimEditorForm : Form
 
     private void TimelineOnEventTimeEdited(TimelineEditRequest request)
     {
-        var startIndex = _events.IndexOf(request.StartEvent);
-        var endIndex = _events.IndexOf(request.EndEvent);
-        if (startIndex < 0 || endIndex < 0)
+        if (!TryNormalizeTimelineEdit(request, out var normalized))
+        {
+            return;
+        }
+
+        var startEvent = request.StartEvent;
+        var endEvent = request.EndEvent;
+        var newStart = normalized.StartMs;
+        var newEnd = normalized.EndMs;
+        if (startEvent.TimeOffsetMs == newStart && endEvent.TimeOffsetMs == newEnd)
         {
             return;
         }
@@ -627,20 +635,6 @@ public sealed class MacroTrimEditorForm : Form
             _timelineEditUndoSaved = true;
         }
 
-        var startEvent = request.StartEvent;
-        var endEvent = request.EndEvent;
-        var newStart = Math.Clamp(request.StartMs, 0, Math.Max(0, GetDuration()));
-        var newEnd = Math.Clamp(request.EndMs, 0, Math.Max(1, GetDuration()));
-        if (!TryNormalizeEditedPair(startIndex, endIndex, ref newStart, ref newEnd))
-        {
-            return;
-        }
-
-        if (startEvent.TimeOffsetMs == newStart && endEvent.TimeOffsetMs == newEnd)
-        {
-            return;
-        }
-
         startEvent.TimeOffsetMs = newStart;
         endEvent.TimeOffsetMs = newEnd;
         UpdateEditedEventPosition(startEvent, newStart);
@@ -649,8 +643,14 @@ public sealed class MacroTrimEditorForm : Form
             UpdateEditedEventPosition(endEvent, newEnd);
         }
 
+        var startIndex = _events.IndexOf(startEvent);
         SortEventsPreservingSelection(startIndex);
         RefreshEditor();
+    }
+
+    private TimelineEditPreview? TimelineOnEventTimeEditPreview(TimelineEditRequest request)
+    {
+        return TryNormalizeTimelineEdit(request, out var normalized) ? normalized : null;
     }
 
     private void UpdateEditedEventPosition(MacroEvent macroEvent, long timeMs)
@@ -673,41 +673,77 @@ public sealed class MacroTrimEditorForm : Form
         macroEvent.Y = point.Value.Y;
     }
 
-    private bool TryNormalizeEditedPair(int startIndex, int endIndex, ref long startMs, ref long endMs)
+    private bool TryNormalizeTimelineEdit(TimelineEditRequest request, out TimelineEditPreview normalized)
     {
-        if (startIndex == endIndex)
+        normalized = new TimelineEditPreview(request.StartMs, request.EndMs);
+        var startIndex = _events.IndexOf(request.StartEvent);
+        var endIndex = _events.IndexOf(request.EndEvent);
+        if (startIndex < 0 || endIndex < 0)
         {
-            startMs = endMs = Math.Clamp(startMs, 0, Math.Max(0, GetDuration()));
-            return true;
+            return false;
         }
 
-        if (endMs <= startMs)
+        var startMs = request.StartMs;
+        var endMs = request.EndMs;
+        if (!TryNormalizeEditedPair(startIndex, endIndex, ref startMs, ref endMs))
         {
-            endMs = startMs + 1;
+            return false;
+        }
+
+        normalized = new TimelineEditPreview(startMs, endMs);
+        return true;
+    }
+
+    private bool TryNormalizeEditedPair(int startIndex, int endIndex, ref long startMs, ref long endMs)
+    {
+        var duration = Math.Max(1, GetDuration());
+        if (startIndex == endIndex)
+        {
+            startMs = endMs = Math.Clamp(startMs, 0, duration);
+            return true;
         }
 
         var startEvent = _events[startIndex];
         var endEvent = _events[endIndex];
         var key = GetOverlapKey(startEvent);
-        if (key is null)
+        if (key is null || !IsMatchingPair(startEvent, endEvent))
         {
-            return true;
+            return false;
         }
 
+        var originalStartMs = Math.Min(startEvent.TimeOffsetMs, endEvent.TimeOffsetMs);
+        var originalEndMs = Math.Max(startEvent.TimeOffsetMs, endEvent.TimeOffsetMs);
+        var minStart = 0L;
+        var maxEnd = (long)duration;
         foreach (var pair in GetPairedIntervals())
         {
-            if (pair.StartIndex == startIndex || pair.EndIndex == endIndex || pair.Key != key)
+            if (pair.Key != key || (pair.StartIndex == startIndex && pair.EndIndex == endIndex))
             {
                 continue;
             }
 
-            if (startMs < pair.EndMs && endMs > pair.StartMs)
+            if (pair.EndMs <= originalStartMs)
+            {
+                minStart = Math.Max(minStart, pair.EndMs + 1);
+            }
+            else if (pair.StartMs >= originalEndMs)
+            {
+                maxEnd = Math.Min(maxEnd, Math.Max(pair.StartMs - 1, 0));
+            }
+            else if (startMs < pair.EndMs && endMs > pair.StartMs)
             {
                 return false;
             }
         }
 
-        return IsMatchingPair(startEvent, endEvent);
+        if (maxEnd <= minStart)
+        {
+            return false;
+        }
+
+        startMs = Math.Clamp(startMs, minStart, maxEnd - 1);
+        endMs = Math.Clamp(endMs, startMs + 1, maxEnd);
+        return endMs > startMs;
     }
 
     private void SortEventsPreservingSelection(int preferredIndex)
@@ -1300,6 +1336,7 @@ public sealed class MacroTrimEditorForm : Form
     private sealed record EditorSnapshot(List<MacroEvent> Events, int? SelectedIndex, int StartMs, int EndMs);
     private sealed record ScreenshotBackground(Image Image, Rectangle Bounds);
     private sealed record TimelineEditRequest(MacroEvent StartEvent, MacroEvent EndEvent, long StartMs, long EndMs);
+    private sealed record TimelineEditPreview(long StartMs, long EndMs);
     private sealed record PairedInterval(int StartIndex, int EndIndex, string Key, long StartMs, long EndMs);
 
     private sealed class SmoothLabel : Control
@@ -1675,6 +1712,7 @@ public sealed class MacroTrimEditorForm : Form
 
         public event Action<int>? EventSelected;
         public event Action<long>? CurrentTimeSelected;
+        public event Func<TimelineEditRequest, TimelineEditPreview?>? EventTimeEditPreview;
         public event Action<TimelineEditRequest>? EventTimeEdited;
         public event Action? EventTimeEditCompleted;
 
@@ -1779,14 +1817,32 @@ public sealed class MacroTrimEditorForm : Form
                     break;
             }
 
-            EventTimeEdited?.Invoke(new TimelineEditRequest(_drag.StartEvent, _drag.EndEvent, startMs, endMs));
+            var preview = EventTimeEditPreview?.Invoke(new TimelineEditRequest(_drag.StartEvent, _drag.EndEvent, startMs, endMs));
+            if (preview is null)
+            {
+                return;
+            }
+
+            _drag.PreviewStartMs = preview.StartMs;
+            _drag.PreviewEndMs = preview.EndMs;
+            Invalidate();
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            var drag = _drag;
             _drag = null;
             Capture = false;
+            if (drag is not null)
+            {
+                EventTimeEdited?.Invoke(new TimelineEditRequest(
+                    drag.StartEvent,
+                    drag.EndEvent,
+                    drag.PreviewStartMs,
+                    drag.PreviewEndMs));
+            }
+
             EventTimeEditCompleted?.Invoke();
         }
 
@@ -1812,6 +1868,7 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             DrawTrimRange(canvas, plot);
+            DrawDraggingPreview(canvas, plot);
             DrawCurrentTime(canvas, plot);
             DrawSelectedPlayhead(canvas, plot);
         }
@@ -2033,6 +2090,77 @@ public sealed class MacroTrimEditorForm : Form
             canvas.DrawLine(x, plot.Top, x, plot.Bottom, linePaint);
         }
 
+        private void DrawDraggingPreview(SKCanvas canvas, Rectangle plot)
+        {
+            if (_drag is null)
+            {
+                return;
+            }
+
+            if (_drag.Hit.StartIndex == _drag.Hit.EndIndex)
+            {
+                var track = GetTrackForEvent(_drag.StartEvent, plot);
+                if (track is null)
+                {
+                    return;
+                }
+
+                using var singleMarkerPaint = new SKPaint
+                {
+                    IsAntialias = true,
+                    Style = SKPaintStyle.Fill,
+                    Color = new SKColor(95, 220, 255, 255)
+                };
+                DrawPreviewMarker(canvas, track.Value, _drag.PreviewStartMs, singleMarkerPaint, 12);
+                return;
+            }
+
+            var pairTrack = GetTrackForEvent(_drag.StartEvent, plot);
+            if (pairTrack is null)
+            {
+                return;
+            }
+
+            var startX = TimeToX(_drag.PreviewStartMs, plot);
+            var endX = TimeToX(_drag.PreviewEndMs, plot);
+            var y = pairTrack.Value.Top + pairTrack.Value.Height / 2 - 5;
+            var bar = Rectangle.FromLTRB(Math.Min(startX, endX), y, Math.Max(startX, endX) + 1, y + 10);
+
+            using var barPaint = new SKPaint
+            {
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill,
+                Color = new SKColor(95, 220, 255, 245)
+            };
+            using var markerPaint = new SKPaint
+            {
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill,
+                Color = new SKColor(255, 245, 120, 255)
+            };
+            canvas.DrawRoundRect(ToSKRect(bar), 5, 5, barPaint);
+            DrawPreviewMarker(canvas, pairTrack.Value, _drag.PreviewStartMs, markerPaint, 12);
+            DrawPreviewMarker(canvas, pairTrack.Value, _drag.PreviewEndMs, markerPaint, 12);
+        }
+
+        private Rectangle? GetTrackForEvent(MacroEvent macroEvent, Rectangle plot)
+        {
+            return macroEvent.Kind switch
+            {
+                MacroEventKind.MouseDown or MacroEventKind.MouseUp => GetTrackBounds(plot, 0),
+                MacroEventKind.KeyDown or MacroEventKind.KeyUp => GetTrackBounds(plot, 1),
+                MacroEventKind.MouseWheel => GetTrackBounds(plot, 2),
+                _ => null
+            };
+        }
+
+        private void DrawPreviewMarker(SKCanvas canvas, Rectangle track, long timeMs, SKPaint paint, int size)
+        {
+            var x = TimeToX(timeMs, GetPlotBounds());
+            var rect = new Rectangle(x - size / 2, track.Top + track.Height / 2 - size / 2, size, size);
+            canvas.DrawOval(ToSKRect(rect), paint);
+        }
+
         private int TimeToX(long timeMs, Rectangle plot)
         {
             var progress = Math.Clamp(timeMs / (double)Math.Max(1, _durationMs), 0.0, 1.0);
@@ -2099,7 +2227,35 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         private sealed record TimelineHit(int EventIndex, int StartIndex, int EndIndex, Rectangle Bounds, TimelineEditKind EditKind);
-        private sealed record TimelineDrag(TimelineHit Hit, MacroEvent StartEvent, MacroEvent EndEvent, long StartMouseTimeMs, long StartMs, long EndMs);
+        private sealed class TimelineDrag
+        {
+            public TimelineDrag(
+                TimelineHit hit,
+                MacroEvent startEvent,
+                MacroEvent endEvent,
+                long startMouseTimeMs,
+                long startMs,
+                long endMs)
+            {
+                Hit = hit;
+                StartEvent = startEvent;
+                EndEvent = endEvent;
+                StartMouseTimeMs = startMouseTimeMs;
+                StartMs = startMs;
+                EndMs = endMs;
+                PreviewStartMs = startMs;
+                PreviewEndMs = endMs;
+            }
+
+            public TimelineHit Hit { get; }
+            public MacroEvent StartEvent { get; }
+            public MacroEvent EndEvent { get; }
+            public long StartMouseTimeMs { get; }
+            public long StartMs { get; }
+            public long EndMs { get; }
+            public long PreviewStartMs { get; set; }
+            public long PreviewEndMs { get; set; }
+        }
         private enum TimelineEditKind
         {
             None,

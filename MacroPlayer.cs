@@ -5,6 +5,12 @@ using System.Windows.Forms;
 
 namespace AutomationTool;
 
+public sealed record PlaybackFeedbackEvent(
+    MacroEventKind Kind,
+    Point Point,
+    RecordedMouseButton Button,
+    Keys KeyCode);
+
 public sealed class MacroPlayer : IDisposable
 {
     private const int StationaryRadiusPx = 2;
@@ -23,7 +29,8 @@ public sealed class MacroPlayer : IDisposable
         NoiseSettings noise,
         int speedPercent,
         Screen? playbackScreen = null,
-        Action<string>? status = null)
+        Action<string>? status = null,
+        Action<PlaybackFeedbackEvent>? feedback = null)
     {
         if (IsPlaying || macro.GetPlaybackEvents().Count == 0)
         {
@@ -40,7 +47,7 @@ public sealed class MacroPlayer : IDisposable
         {
             RaiseTimerResolution();
             var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs);
-            await Task.Run(() => RunTimeline(timeline, token), token);
+            await Task.Run(() => RunTimeline(timeline, token, feedback), token);
         }
         catch (OperationCanceledException)
         {
@@ -648,7 +655,10 @@ public sealed class MacroPlayer : IDisposable
         return hertz is >= 30 and <= 1000 ? hertz : null;
     }
 
-    private static void RunTimeline(IReadOnlyList<PlaybackAction> timeline, CancellationToken token)
+    private static void RunTimeline(
+        IReadOnlyList<PlaybackAction> timeline,
+        CancellationToken token,
+        Action<PlaybackFeedbackEvent>? feedback)
     {
         var pressedInputs = new PressedInputTracker();
         var stopwatch = Stopwatch.StartNew();
@@ -665,6 +675,10 @@ public sealed class MacroPlayer : IDisposable
 
                 WaitUntil(stopwatch, action.TimeMs, token);
                 Execute(action, pressedInputs);
+                if (action.ToFeedbackEvent() is { } feedbackEvent)
+                {
+                    feedback?.Invoke(feedbackEvent);
+                }
             }
         }
         finally
@@ -1018,5 +1032,17 @@ public sealed class MacroPlayer : IDisposable
             Kind = down ? PlaybackActionKind.KeyDown : PlaybackActionKind.KeyUp,
             KeyCode = keyCode
         };
+
+        public PlaybackFeedbackEvent? ToFeedbackEvent()
+        {
+            return Kind switch
+            {
+                PlaybackActionKind.MouseDown => new PlaybackFeedbackEvent(MacroEventKind.MouseDown, Point, Button, Keys.None),
+                PlaybackActionKind.MouseUp => new PlaybackFeedbackEvent(MacroEventKind.MouseUp, Point, Button, Keys.None),
+                PlaybackActionKind.KeyDown => new PlaybackFeedbackEvent(MacroEventKind.KeyDown, Point, RecordedMouseButton.None, KeyCode),
+                PlaybackActionKind.KeyUp => new PlaybackFeedbackEvent(MacroEventKind.KeyUp, Point, RecordedMouseButton.None, KeyCode),
+                _ => null
+            };
+        }
     }
 }
