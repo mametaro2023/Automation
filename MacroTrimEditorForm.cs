@@ -146,7 +146,7 @@ public sealed class MacroTrimEditorForm : Form
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 236));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 286));
         Controls.Add(root);
 
         var header = new Panel
@@ -363,7 +363,8 @@ public sealed class MacroTrimEditorForm : Form
     {
         _canvas.EventSelected += SelectEvent;
         _timeline.EventSelected += SelectEvent;
-        _trimRange.RangeChanged += (_, _) => RefreshCanvasAndRange();
+        _trimRange.RangeChanged += (_, _) => RefreshCanvasAndRange(updateCanvas: !_trimRange.IsDragging);
+        _trimRange.RangeChangeCompleted += (_, _) => RefreshCanvasAndRange(updateCanvas: true);
         _deleteEventButton.Click += (_, _) => DeleteSelectedEvent();
         _applyWaitButton.Click += (_, _) => ApplyWaitBefore();
         _applyPositionButton.Click += (_, _) => ApplyPosition();
@@ -396,15 +397,19 @@ public sealed class MacroTrimEditorForm : Form
     private void RefreshEditor()
     {
         UpdateTrackRange();
-        RefreshCanvasAndRange();
+        RefreshCanvasAndRange(updateCanvas: true);
         RefreshSelectedDetails();
     }
 
-    private void RefreshCanvasAndRange()
+    private void RefreshCanvasAndRange(bool updateCanvas)
     {
         var startMs = _trimRange.StartMs;
         var endMs = _trimRange.EndMs;
-        _canvas.SetData(_events, startMs, endMs, _selectedEventIndex);
+        if (updateCanvas)
+        {
+            _canvas.SetData(_events, startMs, endMs, _selectedEventIndex);
+        }
+
         _timeline.SetData(_events, startMs, endMs, GetDuration(), _selectedEventIndex);
         _trimRange.SetRange(startMs, endMs, Math.Max(1, GetDuration()));
         _rangeLabel.Text = $"残す範囲: {startMs:N0} ms - {endMs:N0} ms / {GetDuration():N0} ms";
@@ -853,6 +858,17 @@ public sealed class MacroTrimEditorForm : Form
         };
     }
 
+    private static string GetShortEventLabel(MacroEvent macroEvent)
+    {
+        return macroEvent.Kind switch
+        {
+            MacroEventKind.MouseDown => macroEvent.Button.ToString(),
+            MacroEventKind.KeyDown => macroEvent.KeyCode.ToString(),
+            MacroEventKind.MouseWheel => macroEvent.WheelDelta > 0 ? "Wheel +" : "Wheel -",
+            _ => ""
+        };
+    }
+
     private sealed record EditorSnapshot(List<MacroEvent> Events, int? SelectedIndex, int StartMs, int EndMs);
     private sealed record ScreenshotBackground(Image Image, Rectangle Bounds);
 
@@ -878,10 +894,12 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         public event EventHandler? RangeChanged;
+        public event EventHandler? RangeChangeCompleted;
 
         public long StartMs { get; private set; }
         public long EndMs { get; private set; } = 1;
         public long DurationMs { get; private set; } = 1;
+        public bool IsDragging => _dragMode != DragMode.None;
 
         public void SetRange(long startMs, long endMs, long durationMs)
         {
@@ -969,6 +987,7 @@ public sealed class MacroTrimEditorForm : Form
             _dragMode = DragMode.None;
             Capture = false;
             UpdateCursor(e.Location);
+            RangeChangeCompleted?.Invoke(this, EventArgs.Empty);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1014,7 +1033,9 @@ public sealed class MacroTrimEditorForm : Form
 
         private Rectangle GetBarBounds()
         {
-            return new Rectangle(0, Height - BarHeight - 8, Math.Max(1, Width - 1), BarHeight);
+            const int leftInset = 104;
+            const int rightInset = 10;
+            return new Rectangle(leftInset, Height - BarHeight - 8, Math.Max(1, Width - leftInset - rightInset), BarHeight);
         }
 
         private int TimeToX(long timeMs, Rectangle bar)
@@ -1054,9 +1075,9 @@ public sealed class MacroTrimEditorForm : Form
     private sealed class MacroTimelineControl : Control
     {
         private const int LabelWidth = 104;
-        private const int RulerHeight = 22;
-        private const int TrackHeight = 18;
-        private const int Gap = 3;
+        private const int RulerHeight = 24;
+        private const int TrackHeight = 26;
+        private const int Gap = 5;
         private readonly List<TimelineHit> _hits = new();
         private List<MacroEvent> _events = new();
         private long _startMs;
@@ -1141,7 +1162,7 @@ public sealed class MacroTrimEditorForm : Form
 
         private Rectangle GetPlotBounds()
         {
-            return new Rectangle(LabelWidth, 4, Math.Max(1, Width - LabelWidth - 10), Math.Max(1, Height - 10));
+            return new Rectangle(LabelWidth, 4, Math.Max(1, Width - LabelWidth - 10), Math.Max(1, Height - 12));
         }
 
         private Rectangle GetTrackBounds(Rectangle plot, int trackIndex)
@@ -1255,6 +1276,7 @@ public sealed class MacroTrimEditorForm : Form
                 {
                     open[key] = (item.macroEvent, item.index);
                     DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+                    DrawEventLabel(g, track, item.macroEvent);
                 }
                 else if (item.macroEvent.Kind == upKind)
                 {
@@ -1262,9 +1284,12 @@ public sealed class MacroTrimEditorForm : Form
                     {
                         var x1 = TimeToX(start.Event.TimeOffsetMs, GetPlotBounds());
                         var x2 = TimeToX(item.macroEvent.TimeOffsetMs, GetPlotBounds());
-                        var y = track.Top + track.Height / 2 - 4;
-                        var rect = Rectangle.FromLTRB(Math.Min(x1, x2), y, Math.Max(x1, x2) + 1, y + 8);
+                        var y = track.Top + track.Height / 2 - 5;
+                        var rect = Rectangle.FromLTRB(Math.Min(x1, x2), y, Math.Max(x1, x2) + 1, y + 10);
                         g.FillRectangle(barBrush, rect);
+                        var hitRect = rect;
+                        hitRect.Inflate(0, 7);
+                        _hits.Add(new TimelineHit(start.Index, hitRect));
                         open.Remove(key);
                     }
 
@@ -1281,6 +1306,7 @@ public sealed class MacroTrimEditorForm : Form
                          .Where(item => item.macroEvent.Kind == MacroEventKind.MouseWheel))
             {
                 DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+                DrawEventLabel(g, track, item.macroEvent);
             }
         }
 
@@ -1292,6 +1318,29 @@ public sealed class MacroTrimEditorForm : Form
             var rect = new Rectangle(x - size / 2, track.Top + track.Height / 2 - size / 2, size, size);
             g.FillEllipse(selected ? selectedBrush : markerBrush, rect);
             _hits.Add(new TimelineHit(index, rect));
+        }
+
+        private void DrawEventLabel(Graphics g, Rectangle track, MacroEvent macroEvent)
+        {
+            var text = GetShortEventLabel(macroEvent);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            var x = TimeToX(macroEvent.TimeOffsetMs, GetPlotBounds());
+            var rect = new Rectangle(
+                Math.Min(Math.Max(track.Left, x + 8), Math.Max(track.Left, track.Right - 58)),
+                track.Top + 1,
+                56,
+                Math.Max(12, track.Height / 2));
+            TextRenderer.DrawText(
+                g,
+                text,
+                Font,
+                rect,
+                Color.FromArgb(232, 236, 242),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
 
         private void DrawSelectedPlayhead(Graphics g, Rectangle plot)
