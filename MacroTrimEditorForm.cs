@@ -7,6 +7,7 @@ public sealed class MacroTrimEditorForm : Form
 {
     private readonly List<MacroEvent> _events;
     private readonly MacroEditorCanvas _canvas = new();
+    private readonly MacroTimelineControl _timeline = new();
     private readonly ListView _eventList = new();
     private readonly TrackBar _startTrack;
     private readonly TrackBar _endTrack;
@@ -116,7 +117,7 @@ public sealed class MacroTrimEditorForm : Form
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
         Controls.Add(root);
 
         var header = new Panel
@@ -139,7 +140,7 @@ public sealed class MacroTrimEditorForm : Form
         });
         header.Controls.Add(new Label
         {
-            Text = "×または一覧で選択。開始地点修正はボタン後に軌道上を左クリック。Ctrl+Z / Ctrl+Y 対応",
+            Text = "軌道・一覧・タイムラインで選択。下部タイムラインは動画編集のように時間軸で入力を確認できます。Ctrl+Z / Ctrl+Y 対応",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.FromArgb(205, 210, 218)
@@ -203,12 +204,46 @@ public sealed class MacroTrimEditorForm : Form
         _eventList.FullRowSelect = true;
         _eventList.HideSelection = false;
         _eventList.MultiSelect = false;
-        _eventList.BackColor = Color.FromArgb(245, 245, 245);
-        _eventList.ForeColor = Color.Black;
+        _eventList.BackColor = Color.FromArgb(24, 26, 30);
+        _eventList.ForeColor = Color.FromArgb(232, 234, 237);
+        _eventList.OwnerDraw = true;
+        _eventList.DrawColumnHeader += EventListOnDrawColumnHeader;
+        _eventList.DrawSubItem += EventListOnDrawSubItem;
         _eventList.Columns.Add("時刻", 72);
         _eventList.Columns.Add("種別", 78);
         _eventList.Columns.Add("詳細", 130);
         _eventList.Columns.Add("座標", 84);
+    }
+
+    private void EventListOnDrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+    {
+        using var back = new SolidBrush(Color.FromArgb(34, 37, 43));
+        using var border = new Pen(Color.FromArgb(58, 62, 70));
+        e.Graphics.FillRectangle(back, e.Bounds);
+        e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+        TextRenderer.DrawText(
+            e.Graphics,
+            e.Header?.Text ?? "",
+            _eventList.Font,
+            new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height),
+            Color.FromArgb(232, 234, 237),
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+
+    private void EventListOnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        var selected = e.Item?.Selected ?? false;
+        using var back = new SolidBrush(selected ? Color.FromArgb(42, 87, 154) : Color.FromArgb(24, 26, 30));
+        e.Graphics.FillRectangle(back, e.Bounds);
+        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+        flags |= e.ColumnIndex == 0 || e.ColumnIndex == 3 ? TextFormatFlags.Right : TextFormatFlags.Left;
+        TextRenderer.DrawText(
+            e.Graphics,
+            e.SubItem?.Text ?? "",
+            _eventList.Font,
+            new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height),
+            selected ? Color.White : Color.FromArgb(232, 234, 237),
+            flags);
     }
 
     private Control CreatePropertyPanel()
@@ -292,39 +327,43 @@ public sealed class MacroTrimEditorForm : Form
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
-            RowCount = 3,
+            ColumnCount = 3,
+            RowCount = 4,
             Padding = new Padding(12, 8, 12, 8),
             BackColor = Color.FromArgb(34, 37, 43)
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        panel.Controls.Add(CreateBottomLabel("開始"), 0, 0);
-        panel.Controls.Add(_startTrack, 1, 0);
-        panel.Controls.Add(CreateBottomLabel("終了"), 0, 1);
-        panel.Controls.Add(_endTrack, 1, 1);
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
         _rangeLabel.Dock = DockStyle.Fill;
         _rangeLabel.ForeColor = Color.White;
         _rangeLabel.TextAlign = ContentAlignment.MiddleLeft;
-        panel.Controls.Add(_rangeLabel, 0, 2);
+        panel.Controls.Add(_rangeLabel, 0, 0);
         panel.SetColumnSpan(_rangeLabel, 2);
+
+        _timeline.Dock = DockStyle.Fill;
+        panel.Controls.Add(_timeline, 0, 1);
+        panel.SetColumnSpan(_timeline, 2);
+
+        panel.Controls.Add(CreateBottomLabel("開始"), 0, 2);
+        panel.Controls.Add(_startTrack, 1, 2);
+        panel.Controls.Add(CreateBottomLabel("終了"), 0, 3);
+        panel.Controls.Add(_endTrack, 1, 3);
 
         var help = new Label
         {
-            Text = "灰: 全体 / 赤: 残す範囲 / 水色: 選択ペア / 黄×: 入力",
+            Text = "灰: 全体 / 赤: 残す範囲 / 水色: 選択 / 黄: 入力点",
             Dock = DockStyle.Fill,
             ForeColor = Color.FromArgb(210, 215, 222),
-            TextAlign = ContentAlignment.MiddleLeft
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(6, 0, 0, 0)
         };
         panel.Controls.Add(help, 2, 0);
-        panel.SetRowSpan(help, 2);
 
         var buttons = new FlowLayoutPanel
         {
@@ -332,8 +371,8 @@ public sealed class MacroTrimEditorForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             WrapContents = false
         };
-        panel.Controls.Add(buttons, 3, 0);
-        panel.SetRowSpan(buttons, 3);
+        panel.Controls.Add(buttons, 2, 2);
+        panel.SetRowSpan(buttons, 2);
 
         _okButton.Text = "適用";
         _okButton.Size = new Size(84, 28);
@@ -360,6 +399,7 @@ public sealed class MacroTrimEditorForm : Form
     private void WireEvents()
     {
         _canvas.EventSelected += SelectEvent;
+        _timeline.EventSelected += SelectEvent;
         _eventList.SelectedIndexChanged += EventListOnSelectedIndexChanged;
         _startTrack.ValueChanged += TrackOnValueChanged;
         _endTrack.ValueChanged += TrackOnValueChanged;
@@ -448,6 +488,7 @@ public sealed class MacroTrimEditorForm : Form
         var startMs = _startTrack.Value;
         var endMs = _endTrack.Value;
         _canvas.SetData(_events, startMs, endMs, _selectedEventIndex);
+        _timeline.SetData(_events, startMs, endMs, GetDuration(), _selectedEventIndex);
         _rangeLabel.Text = $"残す範囲: {startMs:N0} ms - {endMs:N0} ms / {GetDuration():N0} ms";
     }
 
@@ -955,6 +996,283 @@ public sealed class MacroTrimEditorForm : Form
     }
 
     private sealed record EditorSnapshot(List<MacroEvent> Events, int? SelectedIndex, int StartMs, int EndMs);
+
+    private sealed class MacroTimelineControl : Control
+    {
+        private const int LabelWidth = 104;
+        private const int RulerHeight = 22;
+        private const int TrackHeight = 18;
+        private const int Gap = 3;
+        private readonly List<TimelineHit> _hits = new();
+        private List<MacroEvent> _events = new();
+        private long _startMs;
+        private long _endMs;
+        private long _durationMs = 1;
+        private int? _selectedIndex;
+
+        public MacroTimelineControl()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.ResizeRedraw
+                | ControlStyles.UserPaint, true);
+            BackColor = Color.FromArgb(18, 20, 24);
+            Cursor = Cursors.Hand;
+        }
+
+        public event Action<int>? EventSelected;
+
+        public void SetData(List<MacroEvent> events, long startMs, long endMs, long durationMs, int? selectedIndex)
+        {
+            _events = events;
+            _startMs = startMs;
+            _endMs = endMs;
+            _durationMs = Math.Max(1, durationMs);
+            _selectedIndex = selectedIndex;
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            var hit = _hits
+                .OrderBy(item => DistanceSquared(item.Bounds, e.Location))
+                .FirstOrDefault(item =>
+                {
+                    var bounds = item.Bounds;
+                    bounds.Inflate(8, 8);
+                    return bounds.Contains(e.Location);
+                });
+            if (hit is not null)
+            {
+                EventSelected?.Invoke(hit.EventIndex);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            g.Clear(BackColor);
+            _hits.Clear();
+
+            var plot = GetPlotBounds();
+            if (plot.Width <= 10 || plot.Height <= 10)
+            {
+                return;
+            }
+
+            DrawRuler(g, plot);
+            DrawTrimRange(g, plot);
+            DrawTracks(g, plot);
+            DrawMouseMoveTrack(g, GetTrackBounds(plot, 0));
+            DrawPairTrack(g, GetTrackBounds(plot, 1), MacroEventKind.MouseDown, MacroEventKind.MouseUp);
+            DrawPairTrack(g, GetTrackBounds(plot, 2), MacroEventKind.KeyDown, MacroEventKind.KeyUp);
+            DrawWheelTrack(g, GetTrackBounds(plot, 3));
+            DrawSelectedPlayhead(g, plot);
+        }
+
+        private Rectangle GetPlotBounds()
+        {
+            return new Rectangle(LabelWidth, 4, Math.Max(1, Width - LabelWidth - 10), Math.Max(1, Height - 10));
+        }
+
+        private Rectangle GetTrackBounds(Rectangle plot, int trackIndex)
+        {
+            var y = plot.Top + RulerHeight + Gap + trackIndex * (TrackHeight + Gap);
+            return new Rectangle(plot.Left, y, plot.Width, TrackHeight);
+        }
+
+        private void DrawRuler(Graphics g, Rectangle plot)
+        {
+            using var textBrush = new SolidBrush(Color.FromArgb(205, 210, 218));
+            using var linePen = new Pen(Color.FromArgb(58, 62, 70));
+            var ruler = new Rectangle(plot.Left, plot.Top, plot.Width, RulerHeight);
+            g.DrawLine(linePen, ruler.Left, ruler.Bottom - 1, ruler.Right, ruler.Bottom - 1);
+            var tickCount = Math.Clamp(plot.Width / 150, 3, 10);
+            for (var i = 0; i <= tickCount; i++)
+            {
+                var time = _durationMs * i / tickCount;
+                var x = TimeToX(time, plot);
+                g.DrawLine(linePen, x, ruler.Bottom - 8, x, ruler.Bottom);
+                TextRenderer.DrawText(
+                    g,
+                    $"{time:N0} ms",
+                    Font,
+                    new Rectangle(x + 4, ruler.Top + 2, 90, 18),
+                    Color.FromArgb(205, 210, 218),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private void DrawTracks(Graphics g, Rectangle plot)
+        {
+            var labels = new[] { "マウス移動", "マウスボタン", "キー入力", "ホイール" };
+            using var gridPen = new Pen(Color.FromArgb(42, 45, 50));
+            using var laneBrush = new SolidBrush(Color.FromArgb(25, 28, 33));
+            for (var i = 0; i < labels.Length; i++)
+            {
+                var track = GetTrackBounds(plot, i);
+                g.FillRectangle(laneBrush, track);
+                g.DrawRectangle(gridPen, track);
+                TextRenderer.DrawText(
+                    g,
+                    labels[i],
+                    Font,
+                    new Rectangle(8, track.Top, LabelWidth - 14, TrackHeight),
+                    Color.FromArgb(220, 224, 230),
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private void DrawTrimRange(Graphics g, Rectangle plot)
+        {
+            var left = TimeToX(_startMs, plot);
+            var right = TimeToX(_endMs, plot);
+            var trimRect = Rectangle.FromLTRB(left, plot.Top + RulerHeight, Math.Max(left + 1, right), plot.Bottom);
+            using var trimBrush = new SolidBrush(Color.FromArgb(34, 235, 70, 72));
+            using var trimPen = new Pen(Color.FromArgb(230, 235, 70, 72), 2F);
+            g.FillRectangle(trimBrush, trimRect);
+            g.DrawLine(trimPen, left, plot.Top + RulerHeight, left, plot.Bottom);
+            g.DrawLine(trimPen, right, plot.Top + RulerHeight, right, plot.Bottom);
+        }
+
+        private void DrawMouseMoveTrack(Graphics g, Rectangle track)
+        {
+            var moveEvents = _events
+                .Select((macroEvent, index) => new { macroEvent, index })
+                .Where(item => item.macroEvent.Kind == MacroEventKind.MouseMove)
+                .ToList();
+            if (moveEvents.Count < 2)
+            {
+                return;
+            }
+
+            using var pen = new Pen(Color.FromArgb(150, 154, 160, 166), 2F)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round
+            };
+            var centerY = track.Top + track.Height / 2;
+            var lastX = TimeToX(moveEvents[0].macroEvent.TimeOffsetMs, GetPlotBounds());
+            for (var i = 1; i < moveEvents.Count; i++)
+            {
+                var x = TimeToX(moveEvents[i].macroEvent.TimeOffsetMs, GetPlotBounds());
+                if (x == lastX && i % 8 != 0)
+                {
+                    continue;
+                }
+
+                g.DrawLine(pen, lastX, centerY, x, centerY);
+                lastX = x;
+            }
+        }
+
+        private void DrawPairTrack(Graphics g, Rectangle track, MacroEventKind downKind, MacroEventKind upKind)
+        {
+            using var barBrush = new SolidBrush(downKind == MacroEventKind.MouseDown
+                ? Color.FromArgb(205, 95, 220, 255)
+                : Color.FromArgb(205, 255, 210, 92));
+            using var markerBrush = new SolidBrush(Color.Gold);
+            using var selectedBrush = new SolidBrush(Color.FromArgb(255, 95, 220, 255));
+            var open = new Dictionary<string, (MacroEvent Event, int Index)>();
+            foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index }))
+            {
+                var key = GetPairKey(item.macroEvent);
+                if (item.macroEvent.Kind == downKind)
+                {
+                    open[key] = (item.macroEvent, item.index);
+                    DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+                }
+                else if (item.macroEvent.Kind == upKind)
+                {
+                    if (open.TryGetValue(key, out var start))
+                    {
+                        var x1 = TimeToX(start.Event.TimeOffsetMs, GetPlotBounds());
+                        var x2 = TimeToX(item.macroEvent.TimeOffsetMs, GetPlotBounds());
+                        var y = track.Top + track.Height / 2 - 4;
+                        var rect = Rectangle.FromLTRB(Math.Min(x1, x2), y, Math.Max(x1, x2) + 1, y + 8);
+                        g.FillRectangle(barBrush, rect);
+                        open.Remove(key);
+                    }
+
+                    DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+                }
+            }
+        }
+
+        private void DrawWheelTrack(Graphics g, Rectangle track)
+        {
+            using var markerBrush = new SolidBrush(Color.FromArgb(255, 190, 140));
+            using var selectedBrush = new SolidBrush(Color.FromArgb(255, 95, 220, 255));
+            foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index })
+                         .Where(item => item.macroEvent.Kind == MacroEventKind.MouseWheel))
+            {
+                DrawMarker(g, track, item.macroEvent, item.index, markerBrush, selectedBrush);
+            }
+        }
+
+        private void DrawMarker(Graphics g, Rectangle track, MacroEvent macroEvent, int index, Brush markerBrush, Brush selectedBrush)
+        {
+            var x = TimeToX(macroEvent.TimeOffsetMs, GetPlotBounds());
+            var selected = _selectedIndex == index;
+            var size = selected ? 10 : 7;
+            var rect = new Rectangle(x - size / 2, track.Top + track.Height / 2 - size / 2, size, size);
+            g.FillEllipse(selected ? selectedBrush : markerBrush, rect);
+            _hits.Add(new TimelineHit(index, rect));
+        }
+
+        private void DrawSelectedPlayhead(Graphics g, Rectangle plot)
+        {
+            if (_selectedIndex is null || _selectedIndex < 0 || _selectedIndex >= _events.Count)
+            {
+                return;
+            }
+
+            var selected = _events[_selectedIndex.Value];
+            var x = TimeToX(selected.TimeOffsetMs, plot);
+            using var pen = new Pen(Color.FromArgb(255, 95, 220, 255), 2F);
+            g.DrawLine(pen, x, plot.Top, x, plot.Bottom);
+            TextRenderer.DrawText(
+                g,
+                $"{selected.TimeOffsetMs:N0} ms",
+                Font,
+                new Rectangle(Math.Min(x + 6, plot.Right - 90), plot.Top + 2, 86, 18),
+                Color.FromArgb(95, 220, 255),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+
+        private int TimeToX(long timeMs, Rectangle plot)
+        {
+            var progress = Math.Clamp(timeMs / (double)Math.Max(1, _durationMs), 0.0, 1.0);
+            return plot.Left + (int)Math.Round(progress * Math.Max(1, plot.Width - 1));
+        }
+
+        private static string GetPairKey(MacroEvent macroEvent)
+        {
+            return macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp
+                ? $"mouse:{macroEvent.Button}"
+                : $"key:{macroEvent.KeyCode}";
+        }
+
+        private static int DistanceSquared(Rectangle rect, Point point)
+        {
+            var cx = rect.Left + rect.Width / 2;
+            var cy = rect.Top + rect.Height / 2;
+            var dx = cx - point.X;
+            var dy = cy - point.Y;
+            return dx * dx + dy * dy;
+        }
+
+        private sealed record TimelineHit(int EventIndex, Rectangle Bounds);
+    }
 
     private sealed class MacroEditorCanvas : Panel
     {
