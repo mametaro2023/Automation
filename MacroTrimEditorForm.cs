@@ -1640,6 +1640,10 @@ public sealed class MacroTrimEditorForm : Form
         private readonly List<TimelineHit> _hits = new();
         private TimelineDrag? _drag;
         private List<MacroEvent> _events = new();
+        private Bitmap? _baseBitmap;
+        private Size _baseBitmapSize;
+        private bool _baseCacheDirty = true;
+        private long _eventSignature;
         private long _startMs;
         private long _endMs;
         private long _durationMs = 1;
@@ -1664,11 +1668,19 @@ public sealed class MacroTrimEditorForm : Form
         public void SetSelection(int? selectedIndex)
         {
             _selectedIndex = selectedIndex;
+            _baseCacheDirty = true;
             Invalidate();
         }
 
         public void SetData(List<MacroEvent> events, long startMs, long endMs, long durationMs, int? selectedIndex, long currentTimeMs)
         {
+            var signature = CreateEventSignature(events);
+            if (!ReferenceEquals(_events, events) || _durationMs != Math.Max(1, durationMs) || _eventSignature != signature)
+            {
+                _baseCacheDirty = true;
+                _eventSignature = signature;
+            }
+
             _events = events;
             _startMs = startMs;
             _endMs = endMs;
@@ -1682,6 +1694,12 @@ public sealed class MacroTrimEditorForm : Form
         {
             _currentTimeMs = Math.Clamp(currentTimeMs, 0, _durationMs);
             Invalidate();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            _baseCacheDirty = true;
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -1765,8 +1783,6 @@ public sealed class MacroTrimEditorForm : Form
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-            g.Clear(BackColor);
-            _hits.Clear();
 
             var plot = GetPlotBounds();
             if (plot.Width <= 10 || plot.Height <= 10)
@@ -1774,14 +1790,58 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
-            DrawRuler(g, plot);
+            EnsureBaseBitmap(plot);
+            if (_baseBitmap is not null)
+            {
+                g.DrawImageUnscaled(_baseBitmap, Point.Empty);
+            }
+            else
+            {
+                g.Clear(BackColor);
+            }
+
             DrawTrimRange(g, plot);
+            DrawCurrentTime(g, plot);
+            DrawSelectedPlayhead(g, plot);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _baseBitmap?.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        private void EnsureBaseBitmap(Rectangle plot)
+        {
+            if (!_baseCacheDirty && _baseBitmap is not null && _baseBitmapSize == ClientSize)
+            {
+                return;
+            }
+
+            _baseBitmap?.Dispose();
+            _baseBitmap = null;
+            _baseBitmapSize = ClientSize;
+            _hits.Clear();
+            if (Width <= 0 || Height <= 0)
+            {
+                return;
+            }
+
+            _baseBitmap = new Bitmap(Width, Height);
+            using var g = Graphics.FromImage(_baseBitmap);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            g.Clear(BackColor);
+            DrawRuler(g, plot);
             DrawTracks(g, plot);
             DrawPairTrack(g, GetTrackBounds(plot, 0), MacroEventKind.MouseDown, MacroEventKind.MouseUp);
             DrawPairTrack(g, GetTrackBounds(plot, 1), MacroEventKind.KeyDown, MacroEventKind.KeyUp);
             DrawWheelTrack(g, GetTrackBounds(plot, 2));
-            DrawCurrentTime(g, plot);
-            DrawSelectedPlayhead(g, plot);
+            _baseCacheDirty = false;
         }
 
         private Rectangle GetPlotBounds()
@@ -2011,6 +2071,22 @@ public sealed class MacroTrimEditorForm : Form
             return dx * dx + dy * dy;
         }
 
+        private static long CreateEventSignature(List<MacroEvent> events)
+        {
+            var hash = new HashCode();
+            hash.Add(events.Count);
+            foreach (var macroEvent in events.Where(IsEventMarker))
+            {
+                hash.Add((int)macroEvent.Kind);
+                hash.Add(macroEvent.TimeOffsetMs);
+                hash.Add(macroEvent.Button);
+                hash.Add(macroEvent.KeyCode);
+                hash.Add(macroEvent.WheelDelta);
+            }
+
+            return hash.ToHashCode();
+        }
+
         private long XToTime(int x, Rectangle plot)
         {
             var progress = Math.Clamp((x - plot.Left) / (double)Math.Max(1, plot.Width - 1), 0.0, 1.0);
@@ -2035,6 +2111,9 @@ public sealed class MacroTrimEditorForm : Form
         private List<TimedEvent> _drawableEvents = new();
         private List<TimedEvent> _markerEvents = new();
         private List<Point> _fullPathPoints = new();
+        private List<TimedCanvasPoint> _timedCanvasPoints = new();
+        private Bitmap? _baseBitmap;
+        private Size _baseBitmapSize;
         private ScreenshotBackground? _background;
         private CanvasMapping? _mapping;
         private long _startMs;
@@ -2043,6 +2122,7 @@ public sealed class MacroTrimEditorForm : Form
         private bool _showCurrentPoint;
         private int? _selectedIndex;
         private bool _cacheDirty = true;
+        private bool _baseCacheDirty = true;
         public MacroEditorCanvas()
         {
             DoubleBuffered = true;
@@ -2057,13 +2137,26 @@ public sealed class MacroTrimEditorForm : Form
             _background?.Image.Dispose();
             _background = background;
             _cacheDirty = true;
+            _baseCacheDirty = true;
             Invalidate();
         }
 
         public void DisposeBackground()
         {
             _background?.Image.Dispose();
+            _baseBitmap?.Dispose();
             _background = null;
+            _baseBitmap = null;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _baseBitmap?.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
 
         public void SetData(List<MacroEvent> events, long startMs, long endMs, int? selectedIndex)
@@ -2073,6 +2166,7 @@ public sealed class MacroTrimEditorForm : Form
             _endMs = endMs;
             _selectedIndex = selectedIndex;
             _cacheDirty = true;
+            _baseCacheDirty = true;
             Invalidate();
         }
 
@@ -2100,6 +2194,7 @@ public sealed class MacroTrimEditorForm : Form
         protected override void OnResize(EventArgs eventargs)
         {
             _cacheDirty = true;
+            _baseCacheDirty = true;
             base.OnResize(eventargs);
         }
 
@@ -2135,17 +2230,8 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
-            DrawGrid(e.Graphics);
-            DrawBackground(e.Graphics, _mapping.ToCanvas);
-            DrawPolyline(e.Graphics, _fullPathPoints, Color.FromArgb(70, Color.White), 2);
-            DrawPath(
-                e.Graphics,
-                _drawableEvents.Where(item => item.Event.TimeOffsetMs >= _startMs && item.Event.TimeOffsetMs <= _endMs)
-                    .Select(item => item.Event)
-                    .ToList(),
-                _mapping.ToCanvas,
-                Color.FromArgb(235, 235, 70, 72),
-                3);
+            DrawBaseLayer(e.Graphics);
+            DrawTimedPolyline(e.Graphics, _timedCanvasPoints, _startMs, _endMs, Color.FromArgb(235, 235, 70, 72), 3);
 
             var pairRange = GetSelectedPairRange();
             if (pairRange is not null)
@@ -2189,7 +2275,47 @@ public sealed class MacroTrimEditorForm : Form
                 ? new List<Point>()
                 : DrawingPathOptimizer.SimplifyForDisplay(
                     _drawableEvents.Select(item => _mapping.ToCanvas(new Point(item.Event.X, item.Event.Y))).ToList());
+            _timedCanvasPoints = _mapping is null
+                ? new List<TimedCanvasPoint>()
+                : _drawableEvents
+                    .Select(item => new TimedCanvasPoint(item.Event.TimeOffsetMs, _mapping.ToCanvas(new Point(item.Event.X, item.Event.Y))))
+                    .ToList();
             _cacheDirty = false;
+            _baseCacheDirty = true;
+        }
+
+        private void DrawBaseLayer(Graphics graphics)
+        {
+            if (_baseCacheDirty || _baseBitmap is null || _baseBitmapSize != ClientSize)
+            {
+                RebuildBaseBitmap();
+            }
+
+            if (_baseBitmap is not null)
+            {
+                graphics.DrawImageUnscaled(_baseBitmap, Point.Empty);
+            }
+        }
+
+        private void RebuildBaseBitmap()
+        {
+            _baseBitmap?.Dispose();
+            _baseBitmap = null;
+            _baseBitmapSize = ClientSize;
+            if (_mapping is null || Width <= 0 || Height <= 0)
+            {
+                return;
+            }
+
+            _baseBitmap = new Bitmap(Width, Height);
+            using var graphics = Graphics.FromImage(_baseBitmap);
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            graphics.Clear(BackColor);
+            DrawGrid(graphics);
+            DrawBackground(graphics, _mapping.ToCanvas);
+            DrawPolyline(graphics, _fullPathPoints, Color.FromArgb(70, Color.White), 2);
+            _baseCacheDirty = false;
         }
 
         private void DrawMarker(Graphics graphics, TimedEvent item, Func<Point, Point> mapper)
@@ -2437,6 +2563,43 @@ public sealed class MacroTrimEditorForm : Form
             graphics.DrawLines(pen, points.ToArray());
         }
 
+        private static void DrawTimedPolyline(
+            Graphics graphics,
+            List<TimedCanvasPoint> points,
+            long startMs,
+            long endMs,
+            Color color,
+            int width)
+        {
+            if (points.Count < 2 || endMs < startMs)
+            {
+                return;
+            }
+
+            var displayPoints = new List<Point>();
+            foreach (var point in points)
+            {
+                if (point.TimeMs >= startMs && point.TimeMs <= endMs)
+                {
+                    displayPoints.Add(point.Point);
+                }
+            }
+
+            displayPoints = DrawingPathOptimizer.SimplifyForDisplay(displayPoints);
+            if (displayPoints.Count < 2)
+            {
+                return;
+            }
+
+            using var pen = new Pen(color, width)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            };
+            graphics.DrawLines(pen, displayPoints.ToArray());
+        }
+
         private static int DistanceSquared(Point a, Point b)
         {
             var dx = a.X - b.X;
@@ -2445,6 +2608,7 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         private sealed record TimedEvent(int Index, MacroEvent Event);
+        private sealed record TimedCanvasPoint(long TimeMs, Point Point);
         private sealed record MarkerHit(int EventIndex, Point Location);
         private sealed record CanvasMapping(Func<Point, Point> ToCanvas, Func<Point, Point> ToSource);
     }
