@@ -8,9 +8,7 @@ public sealed class MacroTrimEditorForm : Form
     private readonly List<MacroEvent> _events;
     private readonly MacroEditorCanvas _canvas = new();
     private readonly MacroTimelineControl _timeline = new();
-    private readonly ListView _eventList = new();
-    private readonly TrackBar _startTrack;
-    private readonly TrackBar _endTrack;
+    private readonly TrimRangeControl _trimRange = new();
     private readonly Label _rangeLabel = new();
     private readonly Label _selectedLabel = new();
     private readonly NumericUpDown _waitBeforeBox = new();
@@ -24,7 +22,6 @@ public sealed class MacroTrimEditorForm : Form
     private readonly Button _cancelButton = new();
     private readonly Stack<EditorSnapshot> _undoStack = new();
     private readonly Stack<EditorSnapshot> _redoStack = new();
-    private bool _updatingSelection;
     private int? _selectedEventIndex;
     private readonly long _initialTrimStartMs;
     private readonly long _initialTrimEndMs;
@@ -48,11 +45,7 @@ public sealed class MacroTrimEditorForm : Form
         ForeColor = Color.White;
         KeyPreview = true;
 
-        var duration = Math.Max(1, (int)Math.Min(int.MaxValue, GetDuration()));
-        _startTrack = CreateTrackBar(duration);
-        _endTrack = CreateTrackBar(duration);
-        _startTrack.Value = (int)Math.Min(int.MaxValue, _initialTrimStartMs);
-        _endTrack.Value = (int)Math.Min(int.MaxValue, _initialTrimEndMs);
+        _trimRange.SetRange(_initialTrimStartMs, _initialTrimEndMs, Math.Max(1, GetDuration()));
         if (showScreenshotBackground)
         {
             _canvas.SetBackground(LoadScreenshotBackground(screenshotPath, macro));
@@ -153,7 +146,7 @@ public sealed class MacroTrimEditorForm : Form
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 236));
         Controls.Add(root);
 
         var header = new Panel
@@ -176,7 +169,7 @@ public sealed class MacroTrimEditorForm : Form
         });
         header.Controls.Add(new Label
         {
-            Text = "軌道・一覧・タイムラインで選択。下部タイムラインは動画編集のように時間軸で入力を確認できます。Ctrl+Z / Ctrl+Y 対応",
+            Text = "軌道またはタイムライン上のイベントを選択。下部タイムラインは動画編集のように時間軸で入力を確認できます。Ctrl+Z / Ctrl+Y 対応",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.FromArgb(205, 210, 218)
@@ -198,18 +191,15 @@ public sealed class MacroTrimEditorForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 1,
             Padding = new Padding(8),
             BackColor = Color.FromArgb(29, 32, 37)
         };
-        side.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
-        side.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
+        side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         mainSplit.Panel2.Controls.Add(side);
         Shown += (_, _) => LayoutMainSplit(mainSplit);
 
-        ConfigureEventList();
-        side.Controls.Add(_eventList, 0, 0);
-        side.Controls.Add(CreatePropertyPanel(), 0, 1);
+        side.Controls.Add(CreatePropertyPanel(), 0, 0);
 
         root.Controls.Add(CreateBottomPanel(), 0, 2);
     }
@@ -231,55 +221,6 @@ public sealed class MacroTrimEditorForm : Form
             availableWidth - panel2Min);
         split.Panel1MinSize = panel1Min;
         split.Panel2MinSize = panel2Min;
-    }
-
-    private void ConfigureEventList()
-    {
-        _eventList.Dock = DockStyle.Fill;
-        _eventList.View = View.Details;
-        _eventList.FullRowSelect = true;
-        _eventList.HideSelection = false;
-        _eventList.MultiSelect = false;
-        _eventList.BackColor = Color.FromArgb(24, 26, 30);
-        _eventList.ForeColor = Color.FromArgb(232, 234, 237);
-        _eventList.OwnerDraw = true;
-        _eventList.DrawColumnHeader += EventListOnDrawColumnHeader;
-        _eventList.DrawSubItem += EventListOnDrawSubItem;
-        _eventList.Columns.Add("時刻", 72);
-        _eventList.Columns.Add("種別", 78);
-        _eventList.Columns.Add("詳細", 130);
-        _eventList.Columns.Add("座標", 84);
-    }
-
-    private void EventListOnDrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
-    {
-        using var back = new SolidBrush(Color.FromArgb(34, 37, 43));
-        using var border = new Pen(Color.FromArgb(58, 62, 70));
-        e.Graphics.FillRectangle(back, e.Bounds);
-        e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-        TextRenderer.DrawText(
-            e.Graphics,
-            e.Header?.Text ?? "",
-            _eventList.Font,
-            new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height),
-            Color.FromArgb(232, 234, 237),
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-    }
-
-    private void EventListOnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
-    {
-        var selected = e.Item?.Selected ?? false;
-        using var back = new SolidBrush(selected ? Color.FromArgb(42, 87, 154) : Color.FromArgb(24, 26, 30));
-        e.Graphics.FillRectangle(back, e.Bounds);
-        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
-        flags |= e.ColumnIndex == 0 || e.ColumnIndex == 3 ? TextFormatFlags.Right : TextFormatFlags.Left;
-        TextRenderer.DrawText(
-            e.Graphics,
-            e.SubItem?.Text ?? "",
-            _eventList.Font,
-            new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height),
-            selected ? Color.White : Color.FromArgb(232, 234, 237),
-            flags);
     }
 
     private Control CreatePropertyPanel()
@@ -364,17 +305,16 @@ public sealed class MacroTrimEditorForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 4,
+            RowCount = 3,
             Padding = new Padding(12, 8, 12, 8),
             BackColor = Color.FromArgb(34, 37, 43)
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
 
         _rangeLabel.Dock = DockStyle.Fill;
         _rangeLabel.ForeColor = Color.White;
@@ -386,10 +326,8 @@ public sealed class MacroTrimEditorForm : Form
         panel.Controls.Add(_timeline, 0, 1);
         panel.SetColumnSpan(_timeline, 2);
 
-        panel.Controls.Add(CreateBottomLabel("開始"), 0, 2);
-        panel.Controls.Add(_startTrack, 1, 2);
-        panel.Controls.Add(CreateBottomLabel("終了"), 0, 3);
-        panel.Controls.Add(_endTrack, 1, 3);
+        _trimRange.Dock = DockStyle.Fill;
+        panel.Controls.Add(_trimRange, 1, 2);
 
         var help = new Label
         {
@@ -400,6 +338,7 @@ public sealed class MacroTrimEditorForm : Form
             Padding = new Padding(6, 0, 0, 0)
         };
         panel.Controls.Add(help, 2, 0);
+        panel.SetRowSpan(help, 2);
 
         var buttons = new FlowLayoutPanel
         {
@@ -408,7 +347,6 @@ public sealed class MacroTrimEditorForm : Form
             WrapContents = false
         };
         panel.Controls.Add(buttons, 2, 2);
-        panel.SetRowSpan(buttons, 2);
 
         _okButton.Text = "適用";
         _okButton.Size = new Size(84, 28);
@@ -421,24 +359,11 @@ public sealed class MacroTrimEditorForm : Form
         return panel;
     }
 
-    private static Label CreateBottomLabel(string text)
-    {
-        return new Label
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            ForeColor = Color.FromArgb(220, 224, 230),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-    }
-
     private void WireEvents()
     {
         _canvas.EventSelected += SelectEvent;
         _timeline.EventSelected += SelectEvent;
-        _eventList.SelectedIndexChanged += EventListOnSelectedIndexChanged;
-        _startTrack.ValueChanged += TrackOnValueChanged;
-        _endTrack.ValueChanged += TrackOnValueChanged;
+        _trimRange.RangeChanged += (_, _) => RefreshCanvasAndRange();
         _deleteEventButton.Click += (_, _) => DeleteSelectedEvent();
         _applyWaitButton.Click += (_, _) => ApplyWaitBefore();
         _applyPositionButton.Click += (_, _) => ApplyPosition();
@@ -447,55 +372,12 @@ public sealed class MacroTrimEditorForm : Form
         _cancelButton.Click += (_, _) => DialogResult = DialogResult.Cancel;
     }
 
-    private static TrackBar CreateTrackBar(int maximum)
-    {
-        return new TrackBar
-        {
-            Dock = DockStyle.Fill,
-            Minimum = 0,
-            Maximum = maximum,
-            TickFrequency = Math.Max(1, maximum / 10),
-            SmallChange = Math.Max(1, maximum / 100),
-            LargeChange = Math.Max(1, maximum / 20)
-        };
-    }
-
     private static void ConfigureNumber(NumericUpDown box, int minimum, int maximum, int increment)
     {
         box.Minimum = minimum;
         box.Maximum = maximum;
         box.Increment = increment;
         box.ThousandsSeparator = true;
-    }
-
-    private void TrackOnValueChanged(object? sender, EventArgs e)
-    {
-        if (_startTrack.Value >= _endTrack.Value)
-        {
-            if (sender == _startTrack)
-            {
-                _endTrack.Value = Math.Min(_endTrack.Maximum, _startTrack.Value + 1);
-            }
-            else
-            {
-                _startTrack.Value = Math.Max(_startTrack.Minimum, _endTrack.Value - 1);
-            }
-        }
-
-        RefreshCanvasAndRange();
-    }
-
-    private void EventListOnSelectedIndexChanged(object? sender, EventArgs e)
-    {
-        if (_updatingSelection || _eventList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-
-        if (_eventList.SelectedItems[0].Tag is int eventIndex)
-        {
-            SelectEvent(eventIndex);
-        }
     }
 
     private void SelectEvent(int eventIndex)
@@ -507,67 +389,25 @@ public sealed class MacroTrimEditorForm : Form
 
         _selectedEventIndex = eventIndex;
         _canvas.SetSelection(eventIndex);
-        RefreshEventSelection();
+        _timeline.SetSelection(eventIndex);
         RefreshSelectedDetails();
     }
 
     private void RefreshEditor()
     {
         UpdateTrackRange();
-        RefreshEventList();
         RefreshCanvasAndRange();
         RefreshSelectedDetails();
     }
 
     private void RefreshCanvasAndRange()
     {
-        var startMs = _startTrack.Value;
-        var endMs = _endTrack.Value;
+        var startMs = _trimRange.StartMs;
+        var endMs = _trimRange.EndMs;
         _canvas.SetData(_events, startMs, endMs, _selectedEventIndex);
         _timeline.SetData(_events, startMs, endMs, GetDuration(), _selectedEventIndex);
+        _trimRange.SetRange(startMs, endMs, Math.Max(1, GetDuration()));
         _rangeLabel.Text = $"残す範囲: {startMs:N0} ms - {endMs:N0} ms / {GetDuration():N0} ms";
-    }
-
-    private void RefreshEventList()
-    {
-        _updatingSelection = true;
-        _eventList.BeginUpdate();
-        _eventList.Items.Clear();
-        foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index })
-                     .Where(item => IsEventMarker(item.macroEvent)))
-        {
-            var macroEvent = item.macroEvent;
-            var row = new ListViewItem($"{macroEvent.TimeOffsetMs:N0}");
-            row.SubItems.Add(GetKindText(macroEvent));
-            row.SubItems.Add(GetDetailText(macroEvent));
-            row.SubItems.Add($"{macroEvent.X}, {macroEvent.Y}");
-            row.Tag = item.index;
-            _eventList.Items.Add(row);
-
-            if (_selectedEventIndex == item.index)
-            {
-                row.Selected = true;
-                row.EnsureVisible();
-            }
-        }
-
-        _eventList.EndUpdate();
-        _updatingSelection = false;
-    }
-
-    private void RefreshEventSelection()
-    {
-        _updatingSelection = true;
-        foreach (ListViewItem item in _eventList.Items)
-        {
-            item.Selected = item.Tag is int eventIndex && eventIndex == _selectedEventIndex;
-            if (item.Selected)
-            {
-                item.EnsureVisible();
-            }
-        }
-
-        _updatingSelection = false;
     }
 
     private void RefreshSelectedDetails()
@@ -639,9 +479,9 @@ public sealed class MacroTrimEditorForm : Form
             return;
         }
 
-        var selectedWasInsideTrim = _events[index].TimeOffsetMs <= _endTrack.Value;
+        var selectedWasInsideTrim = _events[index].TimeOffsetMs <= _trimRange.EndMs;
         var adjustedEndMs = selectedWasInsideTrim
-            ? _endTrack.Value + delta
+            ? _trimRange.EndMs + delta
             : (long?)null;
 
         SaveUndoState();
@@ -653,10 +493,10 @@ public sealed class MacroTrimEditorForm : Form
         if (adjustedEndMs is not null)
         {
             UpdateTrackRange();
-            _endTrack.Value = Math.Clamp(
-                (int)Math.Min(int.MaxValue, Math.Max(_startTrack.Value + 1L, adjustedEndMs.Value)),
-                Math.Min(_endTrack.Maximum, _startTrack.Value + 1),
-                _endTrack.Maximum);
+            _trimRange.SetRange(
+                _trimRange.StartMs,
+                Math.Clamp(Math.Max(_trimRange.StartMs + 1, adjustedEndMs.Value), _trimRange.StartMs + 1, _trimRange.DurationMs),
+                _trimRange.DurationMs);
         }
 
         RefreshEditor();
@@ -765,37 +605,18 @@ public sealed class MacroTrimEditorForm : Form
 
     private void UpdateTrackRange()
     {
-        var duration = Math.Max(1, (int)Math.Min(int.MaxValue, GetDuration()));
-        SetTrackMaximum(_startTrack, duration);
-        SetTrackMaximum(_endTrack, duration);
-        if (_endTrack.Value == 0 || _endTrack.Value > duration)
-        {
-            _endTrack.Value = duration;
-        }
-
-        if (_startTrack.Value >= _endTrack.Value)
-        {
-            _startTrack.Value = Math.Max(0, _endTrack.Value - 1);
-        }
-    }
-
-    private static void SetTrackMaximum(TrackBar trackBar, int maximum)
-    {
-        if (trackBar.Value > maximum)
-        {
-            trackBar.Value = maximum;
-        }
-
-        trackBar.Maximum = maximum;
-        trackBar.TickFrequency = Math.Max(1, maximum / 10);
-        trackBar.SmallChange = Math.Max(1, maximum / 100);
-        trackBar.LargeChange = Math.Max(1, maximum / 20);
+        var duration = Math.Max(1, GetDuration());
+        var startMs = Math.Clamp(_trimRange.StartMs, 0, Math.Max(0, duration - 1));
+        var endMs = _trimRange.EndMs <= 0
+            ? duration
+            : Math.Clamp(_trimRange.EndMs, startMs + 1, duration);
+        _trimRange.SetRange(startMs, endMs, duration);
     }
 
     private void OkButtonOnClick(object? sender, EventArgs e)
     {
-        var startMs = _startTrack.Value;
-        var endMs = _endTrack.Value;
+        var startMs = _trimRange.StartMs;
+        var endMs = _trimRange.EndMs;
         var edited = _events
             .Select(CloneEvent)
             .OrderBy(item => item.TimeOffsetMs)
@@ -893,8 +714,8 @@ public sealed class MacroTrimEditorForm : Form
         return new EditorSnapshot(
             _events.Select(CloneEvent).ToList(),
             _selectedEventIndex,
-            _startTrack.Value,
-            _endTrack.Value);
+            (int)Math.Min(int.MaxValue, _trimRange.StartMs),
+            (int)Math.Min(int.MaxValue, _trimRange.EndMs));
     }
 
     private void RestoreSnapshot(EditorSnapshot snapshot)
@@ -902,9 +723,10 @@ public sealed class MacroTrimEditorForm : Form
         _events.Clear();
         _events.AddRange(snapshot.Events.Select(CloneEvent));
         UpdateTrackRange();
-        _startTrack.Value = Math.Min(_startTrack.Maximum, snapshot.StartMs);
-        var minEnd = Math.Min(_endTrack.Maximum, _startTrack.Value + 1);
-        _endTrack.Value = Math.Clamp(snapshot.EndMs, minEnd, _endTrack.Maximum);
+        var duration = Math.Max(1, GetDuration());
+        var startMs = Math.Clamp(snapshot.StartMs, 0, Math.Max(0, duration - 1));
+        var endMs = Math.Clamp(snapshot.EndMs, startMs + 1, duration);
+        _trimRange.SetRange(startMs, endMs, duration);
         _selectedEventIndex = snapshot.SelectedIndex is >= 0 && snapshot.SelectedIndex < _events.Count
             ? snapshot.SelectedIndex
             : FindNextMarkerIndex(Math.Min(snapshot.SelectedIndex ?? 0, _events.Count - 1));
@@ -1034,6 +856,201 @@ public sealed class MacroTrimEditorForm : Form
     private sealed record EditorSnapshot(List<MacroEvent> Events, int? SelectedIndex, int StartMs, int EndMs);
     private sealed record ScreenshotBackground(Image Image, Rectangle Bounds);
 
+    private sealed class TrimRangeControl : Control
+    {
+        private const int HandleWidth = 12;
+        private const int BarHeight = 14;
+        private DragMode _dragMode = DragMode.None;
+        private long _dragStartMs;
+        private long _dragEndMs;
+        private int _dragStartX;
+        private bool _suppressRangeChanged;
+
+        public TrimRangeControl()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.ResizeRedraw
+                | ControlStyles.UserPaint, true);
+            BackColor = Color.FromArgb(34, 37, 43);
+            Cursor = Cursors.Hand;
+            MinimumSize = new Size(220, 42);
+        }
+
+        public event EventHandler? RangeChanged;
+
+        public long StartMs { get; private set; }
+        public long EndMs { get; private set; } = 1;
+        public long DurationMs { get; private set; } = 1;
+
+        public void SetRange(long startMs, long endMs, long durationMs)
+        {
+            durationMs = Math.Max(1, durationMs);
+            startMs = Math.Clamp(startMs, 0, Math.Max(0, durationMs - 1));
+            endMs = Math.Clamp(endMs, startMs + 1, durationMs);
+            var changed = StartMs != startMs || EndMs != endMs || DurationMs != durationMs;
+            StartMs = startMs;
+            EndMs = endMs;
+            DurationMs = durationMs;
+            Invalidate();
+            if (changed && !_suppressRangeChanged)
+            {
+                RangeChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            var bar = GetBarBounds();
+            var startX = TimeToX(StartMs, bar);
+            var endX = TimeToX(EndMs, bar);
+            _dragMode = Math.Abs(e.X - startX) <= HandleWidth
+                ? DragMode.Start
+                : Math.Abs(e.X - endX) <= HandleWidth
+                    ? DragMode.End
+                    : e.X > startX && e.X < endX
+                        ? DragMode.Range
+                        : e.X < startX
+                            ? DragMode.Start
+                            : DragMode.End;
+            _dragStartX = e.X;
+            _dragStartMs = StartMs;
+            _dragEndMs = EndMs;
+            Capture = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (_dragMode == DragMode.None)
+            {
+                UpdateCursor(e.Location);
+                return;
+            }
+
+            var bar = GetBarBounds();
+            var time = XToTime(e.X, bar);
+            _suppressRangeChanged = true;
+            try
+            {
+                switch (_dragMode)
+                {
+                    case DragMode.Start:
+                        SetRange(Math.Min(time, EndMs - 1), EndMs, DurationMs);
+                        break;
+                    case DragMode.End:
+                        SetRange(StartMs, Math.Max(time, StartMs + 1), DurationMs);
+                        break;
+                    case DragMode.Range:
+                        var delta = XToTime(_dragStartX + (e.X - _dragStartX), bar) - XToTime(_dragStartX, bar);
+                        var length = _dragEndMs - _dragStartMs;
+                        var start = Math.Clamp(_dragStartMs + delta, 0, Math.Max(0, DurationMs - length));
+                        SetRange(start, start + length, DurationMs);
+                        break;
+                }
+            }
+            finally
+            {
+                _suppressRangeChanged = false;
+            }
+
+            RangeChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            _dragMode = DragMode.None;
+            Capture = false;
+            UpdateCursor(e.Location);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(BackColor);
+            var bar = GetBarBounds();
+            var startX = TimeToX(StartMs, bar);
+            var endX = TimeToX(EndMs, bar);
+            var range = Rectangle.FromLTRB(startX, bar.Top, Math.Max(startX + 1, endX), bar.Bottom);
+
+            using var outerBrush = new SolidBrush(Color.FromArgb(75, 10, 12, 16));
+            using var barBrush = new SolidBrush(Color.FromArgb(75, 222, 226, 232));
+            using var rangeBrush = new SolidBrush(Color.FromArgb(210, 95, 220, 255));
+            using var handleBrush = new SolidBrush(Color.FromArgb(235, 235, 240, 245));
+            using var textBrush = new SolidBrush(Color.FromArgb(220, 224, 230));
+            using var borderPen = new Pen(Color.FromArgb(82, 88, 98));
+
+            g.FillRectangle(outerBrush, bar);
+            g.FillRectangle(barBrush, bar);
+            g.FillRectangle(rangeBrush, range);
+            g.DrawRectangle(borderPen, bar);
+            DrawHandle(g, startX, bar, handleBrush);
+            DrawHandle(g, endX, bar, handleBrush);
+
+            var text = $"トリム: {StartMs:N0} ms - {EndMs:N0} ms";
+            g.DrawString(text, Font, textBrush, bar.Left, 2);
+        }
+
+        private void UpdateCursor(Point location)
+        {
+            var bar = GetBarBounds();
+            var startX = TimeToX(StartMs, bar);
+            var endX = TimeToX(EndMs, bar);
+            Cursor = Math.Abs(location.X - startX) <= HandleWidth || Math.Abs(location.X - endX) <= HandleWidth
+                ? Cursors.SizeWE
+                : location.X > startX && location.X < endX
+                    ? Cursors.SizeAll
+                    : Cursors.Hand;
+        }
+
+        private Rectangle GetBarBounds()
+        {
+            return new Rectangle(0, Height - BarHeight - 8, Math.Max(1, Width - 1), BarHeight);
+        }
+
+        private int TimeToX(long timeMs, Rectangle bar)
+        {
+            var progress = Math.Clamp(timeMs / (double)Math.Max(1, DurationMs), 0.0, 1.0);
+            return bar.Left + (int)Math.Round(progress * Math.Max(1, bar.Width - 1));
+        }
+
+        private long XToTime(int x, Rectangle bar)
+        {
+            var progress = Math.Clamp((x - bar.Left) / (double)Math.Max(1, bar.Width - 1), 0.0, 1.0);
+            return (long)Math.Round(progress * DurationMs);
+        }
+
+        private static void DrawHandle(Graphics g, int x, Rectangle bar, Brush brush)
+        {
+            var points = new[]
+            {
+                new Point(x, bar.Top - 6),
+                new Point(x - 6, bar.Top),
+                new Point(x - 6, bar.Bottom),
+                new Point(x + 6, bar.Bottom),
+                new Point(x + 6, bar.Top)
+            };
+            g.FillPolygon(brush, points);
+        }
+
+        private enum DragMode
+        {
+            None,
+            Start,
+            End,
+            Range
+        }
+    }
+
     private sealed class MacroTimelineControl : Control
     {
         private const int LabelWidth = 104;
@@ -1058,6 +1075,12 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         public event Action<int>? EventSelected;
+
+        public void SetSelection(int? selectedIndex)
+        {
+            _selectedIndex = selectedIndex;
+            Invalidate();
+        }
 
         public void SetData(List<MacroEvent> events, long startMs, long endMs, long durationMs, int? selectedIndex)
         {
@@ -1139,13 +1162,18 @@ public sealed class MacroTrimEditorForm : Form
                 var time = _durationMs * i / tickCount;
                 var x = TimeToX(time, plot);
                 g.DrawLine(linePen, x, ruler.Bottom - 8, x, ruler.Bottom);
+                var labelRect = i == tickCount
+                    ? new Rectangle(Math.Max(plot.Left, x - 90), ruler.Top + 2, 88, 18)
+                    : new Rectangle(x + 4, ruler.Top + 2, 90, 18);
                 TextRenderer.DrawText(
                     g,
                     $"{time:N0} ms",
                     Font,
-                    new Rectangle(x + 4, ruler.Top + 2, 90, 18),
+                    labelRect,
                     Color.FromArgb(205, 210, 218),
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    (i == tickCount ? TextFormatFlags.Right : TextFormatFlags.Left)
+                    | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.EndEllipsis);
             }
         }
 
