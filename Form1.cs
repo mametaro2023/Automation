@@ -313,7 +313,7 @@ public partial class Form1 : Form
         _macroList.Columns.Add("ショートカット", 100);
         _macroList.Columns.Add("件数", 45);
         _macroList.Columns.Add("時間", 88);
-        _macroList.Columns.Add("有効", 50);
+        _macroList.Columns.Add("", 32);
         UpdateMacroListColumnWidths();
         _macroList.SelectedIndexChanged += MacroListOnSelectedIndexChanged;
         _mainSplit.Panel1.Controls.Add(_macroList);
@@ -1535,7 +1535,7 @@ public partial class Form1 : Form
         }
 
         var countWidth = 42;
-        var enabledWidth = 38;
+        var enabledWidth = 30;
         var availableWidth = Math.Max(0, _macroList.ClientSize.Width - 5);
         var shortcutWidth = availableWidth >= 380 ? 92 : 78;
         var timeWidth = availableWidth >= 380 ? 78 : 68;
@@ -1567,7 +1567,7 @@ public partial class Form1 : Form
             var countReduction = Math.Min(overflow, Math.Max(0, countWidth - 25));
             countWidth -= countReduction;
             overflow -= countReduction;
-            var enabledReduction = Math.Min(overflow, Math.Max(0, enabledWidth - 28));
+            var enabledReduction = Math.Min(overflow, Math.Max(0, enabledWidth - 24));
             enabledWidth -= enabledReduction;
             overflow -= enabledReduction;
             timeWidth = Math.Max(0, timeWidth - overflow);
