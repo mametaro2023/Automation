@@ -37,14 +37,14 @@ jobs:
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
           $notesPath = ".github/release-notes/${{ github.ref_name }}.md"
-          $args = @(
+          $releaseArgs = @(
             "release", "create", "${{ github.ref_name }}",
             "dist/AutomationTool-$version-win-x64.zip#AutomationTool-${{ github.ref_name }}-win-x64.zip"
           )
           if (Test-Path $notesPath) {
-            $args += @("--notes-file", $notesPath)
+            $releaseArgs += @("--notes-file", $notesPath)
           } else {
-            $args += "--generate-notes"
+            $releaseArgs += "--generate-notes"
           }
 
-          gh @args
+          gh @releaseArgs
