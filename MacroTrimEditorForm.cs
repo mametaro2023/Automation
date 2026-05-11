@@ -392,9 +392,28 @@ public sealed class MacroTrimEditorForm : Form
         panel.Controls.Add(_rangeLabel, 0, 0);
         panel.SetColumnSpan(_rangeLabel, 2);
 
-        _timeline.Dock = DockStyle.Fill;
-        panel.Controls.Add(_timeline, 0, 1);
-        panel.SetColumnSpan(_timeline, 2);
+        var timelineHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = Color.FromArgb(18, 20, 24),
+            Padding = Padding.Empty,
+            Margin = Padding.Empty
+        };
+        _timeline.Dock = DockStyle.Top;
+        _timeline.Height = timelineHost.Height;
+        _timeline.MinimumSize = new Size(260, 120);
+        _timeline.ContentHeightChanged += height =>
+        {
+            _timeline.Height = Math.Max(height, timelineHost.ClientSize.Height);
+        };
+        timelineHost.Resize += (_, _) =>
+        {
+            _timeline.Height = Math.Max(_timeline.ContentHeight, timelineHost.ClientSize.Height);
+        };
+        timelineHost.Controls.Add(_timeline);
+        panel.Controls.Add(timelineHost, 0, 1);
+        panel.SetColumnSpan(timelineHost, 2);
 
         _trimRange.Dock = DockStyle.Fill;
         panel.Controls.Add(_trimRange, 1, 2);
@@ -1717,7 +1736,7 @@ public sealed class MacroTrimEditorForm : Form
 
         private Rectangle GetBarBounds()
         {
-            const int leftInset = 104;
+            const int leftInset = 112;
             const int rightInset = 10;
             return new Rectangle(leftInset, Height - BarHeight - 8, Math.Max(1, Width - leftInset - rightInset), BarHeight);
         }
@@ -1778,12 +1797,19 @@ public sealed class MacroTrimEditorForm : Form
 
     private sealed class MacroTimelineControl : SKControl
     {
-        private const int LabelWidth = 104;
-        private const int RulerHeight = 24;
-        private const int TrackHeight = 44;
-        private const int Gap = 6;
+        private const int LabelWidth = 112;
+        private const int RulerHeight = 26;
+        private const int LaneHeight = 24;
+        private const int RowPaddingY = 6;
+        private const int RowGap = 4;
+        private const int ClipHeight = 15;
+        private const int MinClipWidth = 12;
+        private const int PointWidth = 10;
+        private const int MinContentHeight = 150;
+
         private readonly List<TimelineHit> _hits = new();
         private TimelineDrag? _drag;
+        private TimelineLayout? _layout;
         private List<MacroEvent> _events = new();
         private SKBitmap? _baseBitmap;
         private Size _baseBitmapSize;
@@ -1794,6 +1820,7 @@ public sealed class MacroTrimEditorForm : Form
         private long _durationMs = 1;
         private long _currentTimeMs;
         private int? _selectedIndex;
+        private int _contentHeight = MinContentHeight;
 
         public MacroTimelineControl()
         {
@@ -1806,6 +1833,9 @@ public sealed class MacroTrimEditorForm : Form
         public event Func<TimelineEditRequest, TimelineEditPreview?>? EventTimeEditPreview;
         public event Action<TimelineEditRequest>? EventTimeEdited;
         public event Action? EventTimeEditCompleted;
+        public event Action<int>? ContentHeightChanged;
+
+        public int ContentHeight => _contentHeight;
 
         public void SetSelection(int? selectedIndex)
         {
@@ -1819,6 +1849,7 @@ public sealed class MacroTrimEditorForm : Form
             var signature = CreateEventSignature(events);
             if (!ReferenceEquals(_events, events) || _durationMs != Math.Max(1, durationMs) || _eventSignature != signature)
             {
+                _layout = null;
                 _baseCacheDirty = true;
                 _eventSignature = signature;
             }
@@ -1841,6 +1872,7 @@ public sealed class MacroTrimEditorForm : Form
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            _layout = null;
             _baseCacheDirty = true;
         }
 
@@ -1852,6 +1884,7 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
+            EnsureLayout(GetPlotBounds());
             var hit = _hits
                 .OrderBy(item => DistanceSquared(item.Bounds, e.Location))
                 .FirstOrDefault(item =>
@@ -1941,7 +1974,6 @@ public sealed class MacroTrimEditorForm : Form
         {
             base.OnPaintSurface(e);
             var canvas = e.Surface.Canvas;
-
             var plot = GetPlotBounds();
             if (plot.Width <= 10 || plot.Height <= 10)
             {
@@ -1976,6 +2008,7 @@ public sealed class MacroTrimEditorForm : Form
 
         private void EnsureBaseBitmap(Rectangle plot)
         {
+            EnsureLayout(plot);
             if (!_baseCacheDirty && _baseBitmap is not null && _baseBitmapSize == ClientSize)
             {
                 return;
@@ -1984,8 +2017,7 @@ public sealed class MacroTrimEditorForm : Form
             _baseBitmap?.Dispose();
             _baseBitmap = null;
             _baseBitmapSize = ClientSize;
-            _hits.Clear();
-            if (Width <= 0 || Height <= 0)
+            if (Width <= 0 || Height <= 0 || _layout is null)
             {
                 return;
             }
@@ -1994,22 +2026,211 @@ public sealed class MacroTrimEditorForm : Form
             using var canvas = new SKCanvas(_baseBitmap);
             canvas.Clear(ToSKColor(BackColor));
             DrawRuler(canvas, plot);
-            DrawTracks(canvas, plot);
-            DrawPairTrack(canvas, GetTrackBounds(plot, 0), MacroEventKind.MouseDown, MacroEventKind.MouseUp);
-            DrawPairTrack(canvas, GetTrackBounds(plot, 1), MacroEventKind.KeyDown, MacroEventKind.KeyUp);
-            DrawWheelTrack(canvas, GetTrackBounds(plot, 2));
+            DrawRows(canvas, _layout);
+            DrawItems(canvas, _layout);
             _baseCacheDirty = false;
+        }
+
+        private void EnsureLayout(Rectangle plot)
+        {
+            if (_layout is not null)
+            {
+                return;
+            }
+
+            _hits.Clear();
+            var layout = BuildLayout(plot);
+            _layout = layout;
+            if (_contentHeight != layout.ContentHeight)
+            {
+                _contentHeight = layout.ContentHeight;
+                ContentHeightChanged?.Invoke(_contentHeight);
+            }
+        }
+
+        private TimelineLayout BuildLayout(Rectangle plot)
+        {
+            var rows = BuildRows();
+            var y = plot.Top + RulerHeight + RowGap;
+            foreach (var row in rows)
+            {
+                AssignLanes(row, plot);
+                row.Y = y;
+                row.Height = RowPaddingY * 2 + Math.Max(1, row.LaneCount) * LaneHeight;
+                BuildItemGeometry(row, plot);
+                y += row.Height + RowGap;
+            }
+
+            var contentHeight = Math.Max(MinContentHeight, y + 8);
+            return new TimelineLayout(rows, contentHeight);
+        }
+
+        private List<TimelineRow> BuildRows()
+        {
+            var rows = new Dictionary<string, TimelineRow>();
+            var open = new Dictionary<string, (MacroEvent Event, int Index)>();
+            foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index }))
+            {
+                if (!IsEventMarker(item.macroEvent))
+                {
+                    continue;
+                }
+
+                var row = GetOrCreateRow(rows, item.macroEvent);
+                var inputKey = GetPairKey(item.macroEvent);
+                if (item.macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown)
+                {
+                    if (open.TryGetValue(inputKey, out var previous))
+                    {
+                        GetOrCreateRow(rows, previous.Event).Items.Add(TimelineItem.Point(previous.Event, previous.Index));
+                    }
+
+                    open[inputKey] = (item.macroEvent, item.index);
+                }
+                else if (item.macroEvent.Kind is MacroEventKind.MouseUp or MacroEventKind.KeyUp)
+                {
+                    if (open.TryGetValue(inputKey, out var start))
+                    {
+                        row.Items.Add(TimelineItem.Clip(start.Event, item.macroEvent, start.Index, item.index));
+                        open.Remove(inputKey);
+                    }
+                    else
+                    {
+                        row.Items.Add(TimelineItem.Point(item.macroEvent, item.index));
+                    }
+                }
+                else
+                {
+                    row.Items.Add(TimelineItem.Point(item.macroEvent, item.index));
+                }
+            }
+
+            foreach (var item in open.Values)
+            {
+                GetOrCreateRow(rows, item.Event).Items.Add(TimelineItem.Point(item.Event, item.Index));
+            }
+
+            return rows.Values
+                .OrderBy(item => item.SortGroup)
+                .ThenBy(item => item.SortOrder)
+                .ThenBy(item => item.Label, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static TimelineRow GetOrCreateRow(Dictionary<string, TimelineRow> rows, MacroEvent macroEvent)
+        {
+            var key = GetRowKey(macroEvent);
+            if (rows.TryGetValue(key, out var row))
+            {
+                return row;
+            }
+
+            row = new TimelineRow(
+                key,
+                GetRowLabel(macroEvent),
+                GetRowKind(macroEvent),
+                GetRowSortGroup(macroEvent),
+                GetRowSortOrder(macroEvent));
+            rows.Add(key, row);
+            return row;
+        }
+
+        private void AssignLanes(TimelineRow row, Rectangle plot)
+        {
+            var laneRightEdges = new List<int>();
+            foreach (var item in row.Items.OrderBy(item => item.StartMs).ThenBy(item => item.EndMs))
+            {
+                var left = TimeToX(item.StartMs, plot);
+                var right = item.IsClip
+                    ? Math.Max(TimeToX(item.EndMs, plot), left + MinClipWidth)
+                    : left + PointWidth;
+                var labelReserve = Math.Min(96, Math.Max(38, GetShortEventLabel(item.StartEvent).Length * 7 + 14));
+                var requiredRight = right + labelReserve + 6;
+                var lane = 0;
+                for (; lane < laneRightEdges.Count; lane++)
+                {
+                    if (left >= laneRightEdges[lane] + 8)
+                    {
+                        break;
+                    }
+                }
+
+                if (lane == laneRightEdges.Count)
+                {
+                    laneRightEdges.Add(requiredRight);
+                }
+                else
+                {
+                    laneRightEdges[lane] = requiredRight;
+                }
+
+                item.Lane = lane;
+            }
+
+            row.LaneCount = Math.Max(1, laneRightEdges.Count);
+        }
+
+        private void BuildItemGeometry(TimelineRow row, Rectangle plot)
+        {
+            foreach (var item in row.Items)
+            {
+                var laneTop = row.Y + RowPaddingY + item.Lane * LaneHeight;
+                var centerY = laneTop + LaneHeight / 2;
+                var x1 = TimeToX(item.StartMs, plot);
+                if (item.IsClip)
+                {
+                    var x2 = TimeToX(item.EndMs, plot);
+                    var right = Math.Max(x2, x1 + MinClipWidth);
+                    item.Bounds = Rectangle.FromLTRB(x1, centerY - ClipHeight / 2, right, centerY + ClipHeight / 2);
+                    item.StartHandle = new Rectangle(item.Bounds.Left - 5, item.Bounds.Top - 4, 10, item.Bounds.Height + 8);
+                    item.EndHandle = new Rectangle(item.Bounds.Right - 5, item.Bounds.Top - 4, 10, item.Bounds.Height + 8);
+                }
+                else
+                {
+                    item.Bounds = new Rectangle(x1 - PointWidth / 2, centerY - PointWidth / 2, PointWidth, PointWidth);
+                    item.StartHandle = item.Bounds;
+                    item.EndHandle = item.Bounds;
+                }
+
+                item.HitBounds = item.Bounds;
+                item.HitBounds.Inflate(item.IsClip ? 0 : 8, item.IsClip ? 7 : 8);
+                item.LabelBounds = GetLabelBounds(item, row, plot);
+                _hits.Add(new TimelineHit(item.StartIndex, item.StartIndex, item.EndIndex, item.HitBounds, TimelineEditKind.Range, row.Key, item.Lane));
+                if (item.IsClip)
+                {
+                    _hits.Add(new TimelineHit(item.StartIndex, item.StartIndex, item.EndIndex, item.StartHandle, TimelineEditKind.Start, row.Key, item.Lane));
+                    _hits.Add(new TimelineHit(item.EndIndex, item.StartIndex, item.EndIndex, item.EndHandle, TimelineEditKind.End, row.Key, item.Lane));
+                }
+            }
+        }
+
+        private static Rectangle GetLabelBounds(TimelineItem item, TimelineRow row, Rectangle plot)
+        {
+            var text = GetShortEventLabel(item.StartEvent);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return Rectangle.Empty;
+            }
+
+            var width = Math.Min(90, Math.Max(34, text.Length * 7 + 14));
+            if (item.IsClip && item.Bounds.Width >= width + 10)
+            {
+                return new Rectangle(item.Bounds.Left + 6, item.Bounds.Top - 1, width, item.Bounds.Height + 2);
+            }
+
+            var x = Math.Min(item.Bounds.Right + 6, Math.Max(plot.Left, plot.Right - width));
+            var y = item.Bounds.Top - 2;
+            if (x < item.Bounds.Right + 4)
+            {
+                y = Math.Max(row.Y + 2, item.Bounds.Top - 14);
+            }
+
+            return new Rectangle(x, y, width, 16);
         }
 
         private Rectangle GetPlotBounds()
         {
-            return new Rectangle(LabelWidth, 4, Math.Max(1, Width - LabelWidth - 10), Math.Max(1, Height - 12));
-        }
-
-        private Rectangle GetTrackBounds(Rectangle plot, int trackIndex)
-        {
-            var y = plot.Top + RulerHeight + Gap + trackIndex * (TrackHeight + Gap);
-            return new Rectangle(plot.Left, y, plot.Width, TrackHeight);
+            return new Rectangle(LabelWidth, 4, Math.Max(1, Width - LabelWidth - 10), Math.Max(1, Math.Max(Height, _contentHeight) - 12));
         }
 
         private void DrawRuler(SKCanvas canvas, Rectangle plot)
@@ -2029,18 +2250,64 @@ public sealed class MacroTrimEditorForm : Form
             }
         }
 
-        private void DrawTracks(SKCanvas canvas, Rectangle plot)
+        private void DrawRows(SKCanvas canvas, TimelineLayout layout)
         {
-            var labels = new[] { "マウス", "キー", "ホイール" };
-            using var fillPaint = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(25, 28, 33) };
-            using var strokePaint = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(42, 45, 50) };
-            for (var i = 0; i < labels.Length; i++)
+            using var rowFill = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(25, 28, 33) };
+            using var alternateFill = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(22, 25, 30) };
+            using var border = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(44, 48, 55) };
+            for (var i = 0; i < layout.Rows.Count; i++)
             {
-                var track = GetTrackBounds(plot, i);
-                canvas.DrawRect(ToSKRect(track), fillPaint);
-                canvas.DrawRect(ToSKRect(track), strokePaint);
-                DrawSkText(canvas, labels[i], 18, track.Top + track.Height / 2F + 4, 12, new SKColor(220, 224, 230));
+                var row = layout.Rows[i];
+                var rect = new Rectangle(0, row.Y, Width, row.Height);
+                canvas.DrawRect(ToSKRect(rect), i % 2 == 0 ? rowFill : alternateFill);
+                canvas.DrawRect(ToSKRect(rect), border);
+                DrawSkText(canvas, row.Label, 12, row.Y + row.Height / 2F + 4, 12, GetRowColor(row.Kind, 230));
             }
+        }
+
+        private void DrawItems(SKCanvas canvas, TimelineLayout layout)
+        {
+            foreach (var row in layout.Rows)
+            {
+                foreach (var item in row.Items)
+                {
+                    DrawItem(canvas, row, item);
+                }
+            }
+        }
+
+        private void DrawItem(SKCanvas canvas, TimelineRow row, TimelineItem item)
+        {
+            var selected = _selectedIndex == item.StartIndex || _selectedIndex == item.EndIndex;
+            var color = GetRowColor(row.Kind, selected ? (byte)245 : (byte)205);
+            using var fill = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = color };
+            using var outline = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = selected ? 2 : 1, Color = selected ? new SKColor(245, 250, 255) : GetRowColor(row.Kind, 230) };
+            if (item.IsClip)
+            {
+                canvas.DrawRoundRect(ToSKRect(item.Bounds), 4, 4, fill);
+                canvas.DrawRoundRect(ToSKRect(item.Bounds), 4, 4, outline);
+                using var handle = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(255, 215, 0, selected ? (byte)255 : (byte)220) };
+                canvas.DrawCircle(item.Bounds.Left, item.Bounds.Top + item.Bounds.Height / 2F, 3, handle);
+                canvas.DrawCircle(item.Bounds.Right, item.Bounds.Top + item.Bounds.Height / 2F, 3, handle);
+            }
+            else
+            {
+                canvas.DrawOval(ToSKRect(item.Bounds), fill);
+                canvas.DrawOval(ToSKRect(item.Bounds), outline);
+            }
+
+            DrawItemLabel(canvas, item, item.IsClip && item.Bounds.Width >= item.LabelBounds.Width + 10);
+        }
+
+        private static void DrawItemLabel(SKCanvas canvas, TimelineItem item, bool inside)
+        {
+            if (item.LabelBounds == Rectangle.Empty)
+            {
+                return;
+            }
+
+            var color = inside ? new SKColor(18, 20, 24, 235) : new SKColor(232, 236, 242, 235);
+            DrawSkText(canvas, GetShortEventLabel(item.StartEvent), item.LabelBounds.Left, item.LabelBounds.Top + 12, 11, color);
         }
 
         private void DrawTrimRange(SKCanvas canvas, Rectangle plot)
@@ -2053,111 +2320,6 @@ public sealed class MacroTrimEditorForm : Form
             canvas.DrawRect(ToSKRect(trimRect), fillPaint);
             canvas.DrawLine(left, plot.Top + RulerHeight, left, plot.Bottom, linePaint);
             canvas.DrawLine(right, plot.Top + RulerHeight, right, plot.Bottom, linePaint);
-        }
-
-        private void DrawPairTrack(SKCanvas canvas, Rectangle track, MacroEventKind downKind, MacroEventKind upKind)
-        {
-            using var barPaint = new SKPaint
-            {
-                IsAntialias = true,
-                Style = SKPaintStyle.Fill,
-                Color = downKind == MacroEventKind.MouseDown ? new SKColor(95, 220, 255, 205) : new SKColor(255, 210, 92, 205)
-            };
-            using var markerPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(255, 215, 0) };
-            using var selectedPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(95, 220, 255) };
-            var lanes = new List<long>();
-            var open = new Dictionary<string, (MacroEvent Event, int Index)>();
-            foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index }))
-            {
-                var key = GetPairKey(item.macroEvent);
-                if (item.macroEvent.Kind == downKind)
-                {
-                    open[key] = (item.macroEvent, item.index);
-                    DrawMarker(canvas, track, item.macroEvent, item.index, markerPaint, selectedPaint);
-                }
-                else if (item.macroEvent.Kind == upKind)
-                {
-                    if (open.TryGetValue(key, out var start))
-                    {
-                        var x1 = TimeToX(start.Event.TimeOffsetMs, GetPlotBounds());
-                        var x2 = TimeToX(item.macroEvent.TimeOffsetMs, GetPlotBounds());
-                        var lane = AllocateLane(lanes, start.Event.TimeOffsetMs, item.macroEvent.TimeOffsetMs);
-                        var laneHeight = Math.Max(16, (track.Height - 4) / Math.Max(1, Math.Min(3, lanes.Count)));
-                        var y = track.Top + 3 + lane * laneHeight;
-                        var rect = Rectangle.FromLTRB(Math.Min(x1, x2), y + 7, Math.Max(x1, x2) + 1, y + 17);
-                        canvas.DrawRoundRect(ToSKRect(rect), 4, 4, barPaint);
-                        var hitRect = rect;
-                        hitRect.Inflate(0, 7);
-                        _hits.Add(new TimelineHit(start.Index, start.Index, item.index, hitRect, TimelineEditKind.Range));
-                        _hits.Add(new TimelineHit(start.Index, start.Index, item.index, new Rectangle(rect.Left - 5, rect.Top - 5, 10, rect.Height + 10), TimelineEditKind.Start));
-                        _hits.Add(new TimelineHit(item.index, start.Index, item.index, new Rectangle(rect.Right - 5, rect.Top - 5, 10, rect.Height + 10), TimelineEditKind.End));
-                        DrawEventLabel(canvas, new Rectangle(track.Left, y, track.Width, laneHeight), start.Event, rect);
-                        open.Remove(key);
-                    }
-
-                    DrawMarker(canvas, track, item.macroEvent, item.index, markerPaint, selectedPaint);
-                }
-            }
-        }
-
-        private static int AllocateLane(List<long> laneEnds, long startMs, long endMs)
-        {
-            for (var i = 0; i < laneEnds.Count; i++)
-            {
-                if (startMs >= laneEnds[i])
-                {
-                    laneEnds[i] = endMs;
-                    return i;
-                }
-            }
-
-            laneEnds.Add(endMs);
-            return laneEnds.Count - 1;
-        }
-
-        private void DrawWheelTrack(SKCanvas canvas, Rectangle track)
-        {
-            using var markerPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(255, 190, 140) };
-            using var selectedPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(95, 220, 255) };
-            foreach (var item in _events.Select((macroEvent, index) => new { macroEvent, index })
-                         .Where(item => item.macroEvent.Kind == MacroEventKind.MouseWheel))
-            {
-                DrawMarker(canvas, track, item.macroEvent, item.index, markerPaint, selectedPaint);
-                DrawEventLabel(canvas, track, item.macroEvent);
-            }
-        }
-
-        private void DrawMarker(SKCanvas canvas, Rectangle track, MacroEvent macroEvent, int index, SKPaint markerPaint, SKPaint selectedPaint)
-        {
-            var x = TimeToX(macroEvent.TimeOffsetMs, GetPlotBounds());
-            var selected = _selectedIndex == index;
-            var size = selected ? 10 : 7;
-            var rect = new Rectangle(x - size / 2, track.Top + track.Height / 2 - size / 2, size, size);
-            canvas.DrawOval(ToSKRect(rect), selected ? selectedPaint : markerPaint);
-            _hits.Add(new TimelineHit(index, index, index, rect, TimelineEditKind.Range));
-        }
-
-        private void DrawEventLabel(SKCanvas canvas, Rectangle track, MacroEvent macroEvent, Rectangle? avoidRect = null)
-        {
-            var text = GetShortEventLabel(macroEvent);
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return;
-            }
-
-            var x = TimeToX(macroEvent.TimeOffsetMs, GetPlotBounds());
-            var labelX = x + 8;
-            if (avoidRect is not null && labelX < avoidRect.Value.Right + 4)
-            {
-                labelX = avoidRect.Value.Right + 4;
-            }
-
-            var rect = new Rectangle(
-                Math.Min(Math.Max(track.Left, labelX), Math.Max(track.Left, track.Right - 64)),
-                track.Top + 1,
-                62,
-                Math.Max(12, track.Height / 2));
-            DrawSkText(canvas, text, rect.Left, rect.Top + rect.Height / 2F + 4, 11, new SKColor(232, 236, 242));
         }
 
         private void DrawSelectedPlayhead(SKCanvas canvas, Rectangle plot)
@@ -2183,72 +2345,43 @@ public sealed class MacroTrimEditorForm : Form
 
         private void DrawDraggingPreview(SKCanvas canvas, Rectangle plot)
         {
-            if (_drag is null)
+            if (_drag is null || _layout is null)
             {
                 return;
             }
 
+            var row = _layout.Rows.FirstOrDefault(item => item.Key == _drag.Hit.RowKey);
+            if (row is null)
+            {
+                return;
+            }
+
+            var laneTop = row.Y + RowPaddingY + _drag.Hit.Lane * LaneHeight;
+            var centerY = laneTop + LaneHeight / 2;
+            using var markerPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(255, 245, 120, 255) };
             if (_drag.Hit.StartIndex == _drag.Hit.EndIndex)
             {
-                var track = GetTrackForEvent(_drag.StartEvent, plot);
-                if (track is null)
-                {
-                    return;
-                }
-
-                using var singleMarkerPaint = new SKPaint
-                {
-                    IsAntialias = true,
-                    Style = SKPaintStyle.Fill,
-                    Color = new SKColor(95, 220, 255, 255)
-                };
-                DrawPreviewMarker(canvas, track.Value, _drag.PreviewStartMs, singleMarkerPaint, 12);
-                return;
-            }
-
-            var pairTrack = GetTrackForEvent(_drag.StartEvent, plot);
-            if (pairTrack is null)
-            {
+                DrawPreviewMarker(canvas, TimeToX(_drag.PreviewStartMs, plot), centerY, markerPaint, 13);
                 return;
             }
 
             var startX = TimeToX(_drag.PreviewStartMs, plot);
             var endX = TimeToX(_drag.PreviewEndMs, plot);
-            var y = pairTrack.Value.Top + pairTrack.Value.Height / 2 - 5;
-            var bar = Rectangle.FromLTRB(Math.Min(startX, endX), y, Math.Max(startX, endX) + 1, y + 10);
+            var bar = Rectangle.FromLTRB(Math.Min(startX, endX), centerY - ClipHeight / 2, Math.Max(startX, endX) + 1, centerY + ClipHeight / 2);
+            if (bar.Width < MinClipWidth)
+            {
+                bar.Width = MinClipWidth;
+            }
 
-            using var barPaint = new SKPaint
-            {
-                IsAntialias = true,
-                Style = SKPaintStyle.Fill,
-                Color = new SKColor(95, 220, 255, 245)
-            };
-            using var markerPaint = new SKPaint
-            {
-                IsAntialias = true,
-                Style = SKPaintStyle.Fill,
-                Color = new SKColor(255, 245, 120, 255)
-            };
+            using var barPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = new SKColor(95, 220, 255, 245) };
             canvas.DrawRoundRect(ToSKRect(bar), 5, 5, barPaint);
-            DrawPreviewMarker(canvas, pairTrack.Value, _drag.PreviewStartMs, markerPaint, 12);
-            DrawPreviewMarker(canvas, pairTrack.Value, _drag.PreviewEndMs, markerPaint, 12);
+            DrawPreviewMarker(canvas, bar.Left, centerY, markerPaint, 12);
+            DrawPreviewMarker(canvas, bar.Right, centerY, markerPaint, 12);
         }
 
-        private Rectangle? GetTrackForEvent(MacroEvent macroEvent, Rectangle plot)
+        private static void DrawPreviewMarker(SKCanvas canvas, int x, int centerY, SKPaint paint, int size)
         {
-            return macroEvent.Kind switch
-            {
-                MacroEventKind.MouseDown or MacroEventKind.MouseUp => GetTrackBounds(plot, 0),
-                MacroEventKind.KeyDown or MacroEventKind.KeyUp => GetTrackBounds(plot, 1),
-                MacroEventKind.MouseWheel => GetTrackBounds(plot, 2),
-                _ => null
-            };
-        }
-
-        private void DrawPreviewMarker(SKCanvas canvas, Rectangle track, long timeMs, SKPaint paint, int size)
-        {
-            var x = TimeToX(timeMs, GetPlotBounds());
-            var rect = new Rectangle(x - size / 2, track.Top + track.Height / 2 - size / 2, size, size);
+            var rect = new Rectangle(x - size / 2, centerY - size / 2, size, size);
             canvas.DrawOval(ToSKRect(rect), paint);
         }
 
@@ -2258,11 +2391,90 @@ public sealed class MacroTrimEditorForm : Form
             return plot.Left + (int)Math.Round(progress * Math.Max(1, plot.Width - 1));
         }
 
+        private long XToTime(int x, Rectangle plot)
+        {
+            var progress = Math.Clamp((x - plot.Left) / (double)Math.Max(1, plot.Width - 1), 0.0, 1.0);
+            return (long)Math.Round(progress * _durationMs);
+        }
+
         private static string GetPairKey(MacroEvent macroEvent)
         {
             return macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp
                 ? $"mouse:{macroEvent.Button}"
                 : $"key:{macroEvent.KeyCode}";
+        }
+
+        private static string GetRowKey(MacroEvent macroEvent)
+        {
+            return macroEvent.Kind switch
+            {
+                MacroEventKind.MouseDown or MacroEventKind.MouseUp => $"mouse:{macroEvent.Button}",
+                MacroEventKind.KeyDown or MacroEventKind.KeyUp => $"key:{macroEvent.KeyCode}",
+                MacroEventKind.MouseWheel => "wheel",
+                _ => "other"
+            };
+        }
+
+        private static string GetRowLabel(MacroEvent macroEvent)
+        {
+            return macroEvent.Kind switch
+            {
+                MacroEventKind.MouseDown or MacroEventKind.MouseUp => $"Mouse {macroEvent.Button}",
+                MacroEventKind.KeyDown or MacroEventKind.KeyUp => $"Key {macroEvent.KeyCode}",
+                MacroEventKind.MouseWheel => "Wheel",
+                _ => "Other"
+            };
+        }
+
+        private static TimelineRowKind GetRowKind(MacroEvent macroEvent)
+        {
+            return macroEvent.Kind switch
+            {
+                MacroEventKind.MouseDown or MacroEventKind.MouseUp => TimelineRowKind.Mouse,
+                MacroEventKind.KeyDown or MacroEventKind.KeyUp => TimelineRowKind.Key,
+                MacroEventKind.MouseWheel => TimelineRowKind.Wheel,
+                _ => TimelineRowKind.Other
+            };
+        }
+
+        private static int GetRowSortGroup(MacroEvent macroEvent)
+        {
+            return macroEvent.Kind switch
+            {
+                MacroEventKind.MouseDown or MacroEventKind.MouseUp => 0,
+                MacroEventKind.KeyDown or MacroEventKind.KeyUp => 1,
+                MacroEventKind.MouseWheel => 2,
+                _ => 3
+            };
+        }
+
+        private static int GetRowSortOrder(MacroEvent macroEvent)
+        {
+            if (macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp)
+            {
+                return macroEvent.Button switch
+                {
+                    RecordedMouseButton.Left => 0,
+                    RecordedMouseButton.Right => 1,
+                    RecordedMouseButton.Middle => 2,
+                    RecordedMouseButton.XButton1 => 3,
+                    RecordedMouseButton.XButton2 => 4,
+                    _ => 9
+                };
+            }
+
+            return macroEvent.Kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? (int)macroEvent.KeyCode : 0;
+        }
+
+        private static SKColor GetRowColor(TimelineRowKind kind, byte alpha)
+        {
+            return kind switch
+            {
+                TimelineRowKind.Mouse => new SKColor(95, 220, 255, alpha),
+                TimelineRowKind.Key => new SKColor(255, 210, 92, alpha),
+                TimelineRowKind.Wheel => new SKColor(255, 190, 140, alpha),
+                _ => new SKColor(220, 224, 230, alpha)
+            };
         }
 
         private static int DistanceSquared(Rectangle rect, Point point)
@@ -2290,12 +2502,6 @@ public sealed class MacroTrimEditorForm : Form
             return hash.ToHashCode();
         }
 
-        private long XToTime(int x, Rectangle plot)
-        {
-            var progress = Math.Clamp((x - plot.Left) / (double)Math.Max(1, plot.Width - 1), 0.0, 1.0);
-            return (long)Math.Round(progress * _durationMs);
-        }
-
         private static SKRect ToSKRect(Rectangle rect)
         {
             return new SKRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
@@ -2317,7 +2523,68 @@ public sealed class MacroTrimEditorForm : Form
             canvas.DrawText(text, x, baseline, font, paint);
         }
 
-        private sealed record TimelineHit(int EventIndex, int StartIndex, int EndIndex, Rectangle Bounds, TimelineEditKind EditKind);
+        private sealed record TimelineLayout(List<TimelineRow> Rows, int ContentHeight);
+
+        private sealed class TimelineRow
+        {
+            public TimelineRow(string key, string label, TimelineRowKind kind, int sortGroup, int sortOrder)
+            {
+                Key = key;
+                Label = label;
+                Kind = kind;
+                SortGroup = sortGroup;
+                SortOrder = sortOrder;
+            }
+
+            public string Key { get; }
+            public string Label { get; }
+            public TimelineRowKind Kind { get; }
+            public int SortGroup { get; }
+            public int SortOrder { get; }
+            public List<TimelineItem> Items { get; } = new();
+            public int Y { get; set; }
+            public int Height { get; set; }
+            public int LaneCount { get; set; } = 1;
+        }
+
+        private sealed class TimelineItem
+        {
+            private TimelineItem(MacroEvent startEvent, MacroEvent endEvent, int startIndex, int endIndex, bool isClip)
+            {
+                StartEvent = startEvent;
+                EndEvent = endEvent;
+                StartIndex = startIndex;
+                EndIndex = endIndex;
+                IsClip = isClip;
+            }
+
+            public MacroEvent StartEvent { get; }
+            public MacroEvent EndEvent { get; }
+            public int StartIndex { get; }
+            public int EndIndex { get; }
+            public bool IsClip { get; }
+            public long StartMs => Math.Min(StartEvent.TimeOffsetMs, EndEvent.TimeOffsetMs);
+            public long EndMs => Math.Max(StartEvent.TimeOffsetMs, EndEvent.TimeOffsetMs);
+            public int Lane { get; set; }
+            public Rectangle Bounds { get; set; }
+            public Rectangle HitBounds { get; set; }
+            public Rectangle StartHandle { get; set; }
+            public Rectangle EndHandle { get; set; }
+            public Rectangle LabelBounds { get; set; }
+
+            public static TimelineItem Clip(MacroEvent startEvent, MacroEvent endEvent, int startIndex, int endIndex)
+            {
+                return new TimelineItem(startEvent, endEvent, startIndex, endIndex, true);
+            }
+
+            public static TimelineItem Point(MacroEvent macroEvent, int index)
+            {
+                return new TimelineItem(macroEvent, macroEvent, index, index, false);
+            }
+        }
+
+        private sealed record TimelineHit(int EventIndex, int StartIndex, int EndIndex, Rectangle Bounds, TimelineEditKind EditKind, string RowKey, int Lane);
+
         private sealed class TimelineDrag
         {
             public TimelineDrag(
@@ -2347,6 +2614,15 @@ public sealed class MacroTrimEditorForm : Form
             public long PreviewStartMs { get; set; }
             public long PreviewEndMs { get; set; }
         }
+
+        private enum TimelineRowKind
+        {
+            Mouse,
+            Key,
+            Wheel,
+            Other
+        }
+
         private enum TimelineEditKind
         {
             None,
