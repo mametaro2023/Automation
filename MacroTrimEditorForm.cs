@@ -1024,17 +1024,71 @@ public sealed class MacroTrimEditorForm : Form
         macroEvent.TimeOffsetMs = _currentTimeMs;
         macroEvent.X = point?.X ?? 0;
         macroEvent.Y = point?.Y ?? 0;
-        if (!CanInsertEvent(macroEvent))
+        var eventsToAdd = new List<MacroEvent> { macroEvent };
+        if (macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown)
         {
-            MessageBox.Show(this, "同じキーまたはマウスボタンが押下中のため、このイベントは追加できません。", "イベント追加", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            var releaseTimeMs = _currentTimeMs + Math.Max(1, dialog.ReleaseDelayMs);
+            var releaseEvent = CreateReleaseEvent(macroEvent);
+            var releasePoint = GetPointAtTime(releaseTimeMs) ?? point;
+            releaseEvent.TimeOffsetMs = releaseTimeMs;
+            releaseEvent.X = releasePoint?.X ?? macroEvent.X;
+            releaseEvent.Y = releasePoint?.Y ?? macroEvent.Y;
+            eventsToAdd.Add(releaseEvent);
+        }
+
+        if (!CanInsertEvents(eventsToAdd))
+        {
+            MessageBox.Show(this, "同じキーまたはマウスボタンの既存イベントと重なるため、このイベントは追加できません。", "イベント追加", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         SaveUndoState();
-        _events.Add(macroEvent);
+        _events.AddRange(eventsToAdd);
         SortEventsPreservingSelection(_events.Count - 1);
         _selectedEventIndex = _events.IndexOf(macroEvent);
         RefreshEditor();
+    }
+
+    private static MacroEvent CreateReleaseEvent(MacroEvent pressEvent)
+    {
+        return new MacroEvent
+        {
+            Kind = pressEvent.Kind switch
+            {
+                MacroEventKind.MouseDown => MacroEventKind.MouseUp,
+                MacroEventKind.KeyDown => MacroEventKind.KeyUp,
+                _ => pressEvent.Kind
+            },
+            Button = pressEvent.Button,
+            KeyCode = pressEvent.KeyCode,
+            WheelDelta = pressEvent.WheelDelta,
+            X = pressEvent.X,
+            Y = pressEvent.Y
+        };
+    }
+
+    private bool CanInsertEvents(IReadOnlyList<MacroEvent> eventsToAdd)
+    {
+        if (eventsToAdd.Count == 1)
+        {
+            return CanInsertEvent(eventsToAdd[0]);
+        }
+
+        var startEvent = eventsToAdd[0];
+        var endEvent = eventsToAdd[^1];
+        var key = GetOverlapKey(startEvent);
+        if (key is null || !IsMatchingPair(startEvent, endEvent) || endEvent.TimeOffsetMs <= startEvent.TimeOffsetMs)
+        {
+            return false;
+        }
+
+        return !_events.Any(existing =>
+            GetOverlapKey(existing) == key
+            && existing.TimeOffsetMs >= startEvent.TimeOffsetMs
+            && existing.TimeOffsetMs <= endEvent.TimeOffsetMs)
+            && GetPairedIntervals()
+                .Where(interval => interval.Key == key)
+                .All(interval => endEvent.TimeOffsetMs < interval.StartMs || startEvent.TimeOffsetMs > interval.EndMs);
     }
 
     private bool CanInsertEvent(MacroEvent macroEvent)
@@ -1599,11 +1653,12 @@ public sealed class MacroTrimEditorForm : Form
         }
     }
 
-    private sealed class EventCaptureDialog : Form
+    private sealed class EventCaptureDialog : Form, IMessageFilter
     {
         private readonly Label _messageLabel = new();
-        private readonly ComboBox _directionBox = new();
+        private readonly NumericUpDown _releaseDelayBox = new();
         private readonly Button _cancelButton = new();
+        private bool _messageFilterRegistered;
 
         public EventCaptureDialog()
         {
@@ -1612,26 +1667,38 @@ public sealed class MacroTrimEditorForm : Form
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(420, 150);
+            ClientSize = new Size(420, 168);
             KeyPreview = true;
             BackColor = Color.FromArgb(34, 37, 43);
             ForeColor = Color.White;
             Font = new Font("Yu Gothic UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
-            _messageLabel.Text = "追加したいキー、マウスボタン、またはホイールを入力してください。";
+            _messageLabel.Text = "追加したいキーまたはマウスボタンを押してください。\r\n押下イベントを追加し、解放イベントは指定時間後に自動追加します。";
             _messageLabel.Dock = DockStyle.Top;
-            _messageLabel.Height = 72;
+            _messageLabel.Height = 74;
             _messageLabel.TextAlign = ContentAlignment.MiddleCenter;
             _messageLabel.ForeColor = Color.FromArgb(230, 234, 240);
             Controls.Add(_messageLabel);
 
-            _directionBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            _directionBox.Items.AddRange(new object[] { "押下イベントを追加", "解放イベントを追加" });
-            _directionBox.SelectedIndex = 0;
-            _directionBox.Left = 96;
-            _directionBox.Top = 78;
-            _directionBox.Width = 228;
-            Controls.Add(_directionBox);
+            var delayLabel = new Label
+            {
+                Text = "解放まで(ms)",
+                Left = 84,
+                Top = 88,
+                Width = 105,
+                Height = 24,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(220, 224, 230)
+            };
+            Controls.Add(delayLabel);
+
+            _releaseDelayBox.Minimum = 1;
+            _releaseDelayBox.Maximum = 10000;
+            _releaseDelayBox.Value = 60;
+            _releaseDelayBox.Left = 196;
+            _releaseDelayBox.Top = 86;
+            _releaseDelayBox.Width = 110;
+            Controls.Add(_releaseDelayBox);
 
             _cancelButton.Text = "キャンセル";
             _cancelButton.Dock = DockStyle.Bottom;
@@ -1641,6 +1708,65 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         public MacroEvent? CapturedEvent { get; private set; }
+        public int ReleaseDelayMs => (int)_releaseDelayBox.Value;
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (!IsDialogMessageTarget(m.HWnd))
+            {
+                return false;
+            }
+
+            var target = Control.FromHandle(m.HWnd);
+            if (IsChildOf(target, _releaseDelayBox) || IsChildOf(target, _cancelButton))
+            {
+                return false;
+            }
+
+            switch (m.Msg)
+            {
+                case NativeMethods.WM_LBUTTONDOWN:
+                    CaptureMouseButton(RecordedMouseButton.Left);
+                    return true;
+                case NativeMethods.WM_RBUTTONDOWN:
+                    CaptureMouseButton(RecordedMouseButton.Right);
+                    return true;
+                case NativeMethods.WM_MBUTTONDOWN:
+                    CaptureMouseButton(RecordedMouseButton.Middle);
+                    return true;
+                case NativeMethods.WM_XBUTTONDOWN:
+                    CaptureMouseButton(GetXButton(m.WParam));
+                    return true;
+                case NativeMethods.WM_MOUSEWHEEL:
+                    CapturedEvent = new MacroEvent
+                    {
+                        Kind = MacroEventKind.MouseWheel,
+                        WheelDelta = GetWheelDelta(m.WParam)
+                    };
+                    DialogResult = DialogResult.OK;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Application.AddMessageFilter(this);
+            _messageFilterRegistered = true;
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            if (_messageFilterRegistered)
+            {
+                Application.RemoveMessageFilter(this);
+                _messageFilterRegistered = false;
+            }
+
+            base.OnFormClosed(e);
+        }
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
@@ -1652,7 +1778,7 @@ public sealed class MacroTrimEditorForm : Form
 
             CapturedEvent = new MacroEvent
             {
-                Kind = _directionBox.SelectedIndex == 1 ? MacroEventKind.KeyUp : MacroEventKind.KeyDown,
+                Kind = MacroEventKind.KeyDown,
                 KeyCode = e.KeyCode
             };
             DialogResult = DialogResult.OK;
@@ -1660,26 +1786,19 @@ public sealed class MacroTrimEditorForm : Form
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
-            base.OnMouseDown(e);
-            CapturedEvent = new MacroEvent
+            CaptureMouseButton(e.Button switch
             {
-                Kind = _directionBox.SelectedIndex == 1 ? MacroEventKind.MouseUp : MacroEventKind.MouseDown,
-                Button = e.Button switch
-                {
-                    MouseButtons.Left => RecordedMouseButton.Left,
-                    MouseButtons.Right => RecordedMouseButton.Right,
-                    MouseButtons.Middle => RecordedMouseButton.Middle,
-                    MouseButtons.XButton1 => RecordedMouseButton.XButton1,
-                    MouseButtons.XButton2 => RecordedMouseButton.XButton2,
-                    _ => RecordedMouseButton.None
-                }
-            };
-            DialogResult = DialogResult.OK;
+                MouseButtons.Left => RecordedMouseButton.Left,
+                MouseButtons.Right => RecordedMouseButton.Right,
+                MouseButtons.Middle => RecordedMouseButton.Middle,
+                MouseButtons.XButton1 => RecordedMouseButton.XButton1,
+                MouseButtons.XButton2 => RecordedMouseButton.XButton2,
+                _ => RecordedMouseButton.None
+            });
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            base.OnMouseWheel(e);
             CapturedEvent = new MacroEvent
             {
                 Kind = MacroEventKind.MouseWheel,
@@ -1687,8 +1806,69 @@ public sealed class MacroTrimEditorForm : Form
             };
             DialogResult = DialogResult.OK;
         }
-    }
 
+        private void CaptureMouseButton(RecordedMouseButton button)
+        {
+            if (button == RecordedMouseButton.None)
+            {
+                return;
+            }
+
+            CapturedEvent = new MacroEvent
+            {
+                Kind = MacroEventKind.MouseDown,
+                Button = button
+            };
+            DialogResult = DialogResult.OK;
+        }
+
+        private bool IsDialogMessageTarget(IntPtr handle)
+        {
+            var control = Control.FromHandle(handle);
+            while (control is not null)
+            {
+                if (ReferenceEquals(control, this))
+                {
+                    return true;
+                }
+
+                control = control.Parent;
+            }
+
+            return false;
+        }
+
+        private static bool IsChildOf(Control? control, Control parent)
+        {
+            while (control is not null)
+            {
+                if (ReferenceEquals(control, parent))
+                {
+                    return true;
+                }
+
+                control = control.Parent;
+            }
+
+            return false;
+        }
+
+        private static int GetWheelDelta(IntPtr wParam)
+        {
+            return unchecked((short)(((long)wParam >> 16) & 0xFFFF));
+        }
+
+        private static RecordedMouseButton GetXButton(IntPtr wParam)
+        {
+            var xButton = unchecked((short)(((long)wParam >> 16) & 0xFFFF));
+            return xButton switch
+            {
+                1 => RecordedMouseButton.XButton1,
+                2 => RecordedMouseButton.XButton2,
+                _ => RecordedMouseButton.None
+            };
+        }
+    }
     private sealed class TrimRangeControl : SKControl
     {
         private const int HandleWidth = 12;
