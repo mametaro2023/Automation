@@ -400,18 +400,58 @@ public sealed class MacroTrimEditorForm : Form
             Padding = Padding.Empty,
             Margin = Padding.Empty
         };
-        _timeline.Dock = DockStyle.Top;
-        _timeline.Height = timelineHost.Height;
+        var timelineWidth = 0;
+        void ResizeTimeline()
+        {
+            var width = Math.Max(timelineHost.ClientSize.Width, timelineWidth <= 0 ? timelineHost.ClientSize.Width : timelineWidth);
+            _timeline.Width = Math.Max(260, width);
+            _timeline.Height = Math.Max(_timeline.ContentHeight, timelineHost.ClientSize.Height);
+        }
+
+        _timeline.Location = Point.Empty;
+        _timeline.Anchor = AnchorStyles.Left | AnchorStyles.Top;
         _timeline.MinimumSize = new Size(260, 120);
         _timeline.ContentHeightChanged += height =>
         {
             _timeline.Height = Math.Max(height, timelineHost.ClientSize.Height);
         };
+        _timeline.PanRequested += delta =>
+        {
+            var current = timelineHost.AutoScrollPosition;
+            var nextX = Math.Max(0, -current.X - delta.X);
+            var nextY = Math.Max(0, -current.Y - delta.Y);
+            timelineHost.AutoScrollPosition = new Point(nextX, nextY);
+        };
+        _timeline.HorizontalZoomRequested += (factor, anchorX) =>
+        {
+            var oldWidth = Math.Max(1, _timeline.Width);
+            var hostWidth = Math.Max(1, timelineHost.ClientSize.Width);
+            var current = timelineHost.AutoScrollPosition;
+            var contentX = -current.X + anchorX;
+            var ratio = Math.Clamp(contentX / (double)oldWidth, 0.0, 1.0);
+            timelineWidth = Math.Clamp((int)Math.Round(oldWidth * factor), hostWidth, Math.Max(hostWidth, 24000));
+            ResizeTimeline();
+            timelineHost.AutoScrollPosition = new Point(
+                Math.Max(0, (int)Math.Round(ratio * _timeline.Width) - anchorX),
+                Math.Max(0, -timelineHost.AutoScrollPosition.Y));
+        };
+        _timeline.VerticalZoomRequested += (factor, anchorY) =>
+        {
+            var current = timelineHost.AutoScrollPosition;
+            var contentY = -current.Y + anchorY;
+            var ratio = Math.Clamp(contentY / (double)Math.Max(1, _timeline.Height), 0.0, 1.0);
+            _timeline.SetVerticalScale(_timeline.VerticalScale * factor);
+            ResizeTimeline();
+            timelineHost.AutoScrollPosition = new Point(
+                Math.Max(0, -timelineHost.AutoScrollPosition.X),
+                Math.Max(0, (int)Math.Round(ratio * _timeline.Height) - anchorY));
+        };
         timelineHost.Resize += (_, _) =>
         {
-            _timeline.Height = Math.Max(_timeline.ContentHeight, timelineHost.ClientSize.Height);
+            ResizeTimeline();
         };
         timelineHost.Controls.Add(_timeline);
+        timelineHost.HandleCreated += (_, _) => ResizeTimeline();
         panel.Controls.Add(timelineHost, 0, 1);
         panel.SetColumnSpan(timelineHost, 2);
 
@@ -1799,10 +1839,10 @@ public sealed class MacroTrimEditorForm : Form
     {
         private const int LabelWidth = 112;
         private const int RulerHeight = 26;
-        private const int LaneHeight = 24;
-        private const int RowPaddingY = 6;
+        private const int BaseLaneHeight = 24;
+        private const int BaseRowPaddingY = 6;
         private const int RowGap = 4;
-        private const int ClipHeight = 15;
+        private const int BaseClipHeight = 15;
         private const int MinClipWidth = 12;
         private const int PointWidth = 10;
         private const int MinContentHeight = 150;
@@ -1821,11 +1861,15 @@ public sealed class MacroTrimEditorForm : Form
         private long _currentTimeMs;
         private int? _selectedIndex;
         private int _contentHeight = MinContentHeight;
+        private double _verticalScale = 1.0;
+        private bool _isPanning;
+        private Point _lastPanPoint;
 
         public MacroTimelineControl()
         {
             BackColor = Color.FromArgb(18, 20, 24);
             Cursor = Cursors.Hand;
+            TabStop = true;
         }
 
         public event Action<int>? EventSelected;
@@ -1834,8 +1878,35 @@ public sealed class MacroTrimEditorForm : Form
         public event Action<TimelineEditRequest>? EventTimeEdited;
         public event Action? EventTimeEditCompleted;
         public event Action<int>? ContentHeightChanged;
+        public event Action<Point>? PanRequested;
+        public event Action<double, int>? HorizontalZoomRequested;
+        public event Action<double, int>? VerticalZoomRequested;
 
         public int ContentHeight => _contentHeight;
+        public double VerticalScale => _verticalScale;
+
+        private int LaneHeight => Math.Max(14, (int)Math.Round(BaseLaneHeight * _verticalScale));
+        private int RowPaddingY => Math.Max(3, (int)Math.Round(BaseRowPaddingY * _verticalScale));
+        private int ClipHeight => Math.Max(8, (int)Math.Round(BaseClipHeight * _verticalScale));
+
+        public void SetVerticalScale(double scale)
+        {
+            var clamped = Math.Clamp(scale, 0.55, 2.8);
+            if (Math.Abs(_verticalScale - clamped) < 0.001)
+            {
+                return;
+            }
+
+            _verticalScale = clamped;
+            _layout = null;
+            _baseCacheDirty = true;
+            if (Width > 0 && Height > 0)
+            {
+                EnsureLayout(GetPlotBounds());
+            }
+
+            Invalidate();
+        }
 
         public void SetSelection(int? selectedIndex)
         {
@@ -1879,6 +1950,16 @@ public sealed class MacroTrimEditorForm : Form
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            Focus();
+            if (e.Button == MouseButtons.Middle)
+            {
+                _isPanning = true;
+                _lastPanPoint = e.Location;
+                Cursor = Cursors.SizeAll;
+                Capture = true;
+                return;
+            }
+
             if (e.Button != MouseButtons.Left)
             {
                 return;
@@ -1917,6 +1998,18 @@ public sealed class MacroTrimEditorForm : Form
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (_isPanning)
+            {
+                var panDelta = new Point(e.X - _lastPanPoint.X, e.Y - _lastPanPoint.Y);
+                _lastPanPoint = e.Location;
+                if (panDelta != Point.Empty)
+                {
+                    PanRequested?.Invoke(panDelta);
+                }
+
+                return;
+            }
+
             if (_drag is null)
             {
                 return;
@@ -1955,6 +2048,14 @@ public sealed class MacroTrimEditorForm : Form
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Middle && _isPanning)
+            {
+                _isPanning = false;
+                Cursor = Cursors.Hand;
+                Capture = false;
+                return;
+            }
+
             var drag = _drag;
             _drag = null;
             Capture = false;
@@ -1968,6 +2069,27 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             EventTimeEditCompleted?.Invoke();
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            Focus();
+            var factor = e.Delta > 0 ? 1.12 : 1.0 / 1.12;
+            if ((ModifierKeys & Keys.Control) == Keys.Control)
+            {
+                VerticalZoomRequested?.Invoke(factor, e.Y);
+            }
+            else
+            {
+                HorizontalZoomRequested?.Invoke(factor, e.X);
+            }
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            Focus();
         }
 
         protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
