@@ -401,11 +401,26 @@ public sealed class MacroTrimEditorForm : Form
             Margin = Padding.Empty
         };
         var timelineWidth = 0;
+        void CenterTimelineOnPlayhead()
+        {
+            var x = _timeline.CurrentTimeContentX;
+            var targetX = Math.Max(0, x - timelineHost.ClientSize.Width / 2);
+            timelineHost.AutoScrollPosition = new Point(targetX, Math.Max(0, -timelineHost.AutoScrollPosition.Y));
+            UpdateTimelineViewport();
+        }
+
         void ResizeTimeline()
         {
             var width = Math.Max(timelineHost.ClientSize.Width, timelineWidth <= 0 ? timelineHost.ClientSize.Width : timelineWidth);
             _timeline.Width = Math.Max(260, width);
             _timeline.Height = Math.Max(_timeline.ContentHeight, timelineHost.ClientSize.Height);
+            UpdateTimelineViewport();
+        }
+
+        void UpdateTimelineViewport()
+        {
+            var current = timelineHost.AutoScrollPosition;
+            _timeline.SetViewport(new Point(-current.X, -current.Y), timelineHost.ClientSize);
         }
 
         _timeline.Location = Point.Empty;
@@ -421,37 +436,35 @@ public sealed class MacroTrimEditorForm : Form
             var nextX = Math.Max(0, -current.X - delta.X);
             var nextY = Math.Max(0, -current.Y - delta.Y);
             timelineHost.AutoScrollPosition = new Point(nextX, nextY);
+            UpdateTimelineViewport();
         };
         _timeline.HorizontalZoomRequested += (factor, anchorX) =>
         {
             var oldWidth = Math.Max(1, _timeline.Width);
             var hostWidth = Math.Max(1, timelineHost.ClientSize.Width);
-            var current = timelineHost.AutoScrollPosition;
-            var contentX = -current.X + anchorX;
-            var ratio = Math.Clamp(contentX / (double)oldWidth, 0.0, 1.0);
             timelineWidth = Math.Clamp((int)Math.Round(oldWidth * factor), hostWidth, Math.Max(hostWidth, 24000));
             ResizeTimeline();
-            timelineHost.AutoScrollPosition = new Point(
-                Math.Max(0, (int)Math.Round(ratio * _timeline.Width) - anchorX),
-                Math.Max(0, -timelineHost.AutoScrollPosition.Y));
+            CenterTimelineOnPlayhead();
         };
         _timeline.VerticalZoomRequested += (factor, anchorY) =>
         {
             var current = timelineHost.AutoScrollPosition;
-            var contentY = -current.Y + anchorY;
-            var ratio = Math.Clamp(contentY / (double)Math.Max(1, _timeline.Height), 0.0, 1.0);
             _timeline.SetVerticalScale(_timeline.VerticalScale * factor);
             ResizeTimeline();
-            timelineHost.AutoScrollPosition = new Point(
-                Math.Max(0, -timelineHost.AutoScrollPosition.X),
-                Math.Max(0, (int)Math.Round(ratio * _timeline.Height) - anchorY));
+            timelineHost.AutoScrollPosition = new Point(Math.Max(0, -current.X), Math.Max(0, -current.Y));
+            CenterTimelineOnPlayhead();
         };
+        timelineHost.Scroll += (_, _) => UpdateTimelineViewport();
         timelineHost.Resize += (_, _) =>
         {
             ResizeTimeline();
         };
         timelineHost.Controls.Add(_timeline);
-        timelineHost.HandleCreated += (_, _) => ResizeTimeline();
+        timelineHost.HandleCreated += (_, _) =>
+        {
+            ResizeTimeline();
+            UpdateTimelineViewport();
+        };
         panel.Controls.Add(timelineHost, 0, 1);
         panel.SetColumnSpan(timelineHost, 2);
 
@@ -1864,6 +1877,8 @@ public sealed class MacroTrimEditorForm : Form
         private double _verticalScale = 1.0;
         private bool _isPanning;
         private Point _lastPanPoint;
+        private Point _viewportOffset;
+        private Size _viewportSize;
 
         public MacroTimelineControl()
         {
@@ -1884,6 +1899,7 @@ public sealed class MacroTrimEditorForm : Form
 
         public int ContentHeight => _contentHeight;
         public double VerticalScale => _verticalScale;
+        public int CurrentTimeContentX => TimeToX(_currentTimeMs, GetPlotBounds());
 
         private int LaneHeight => Math.Max(14, (int)Math.Round(BaseLaneHeight * _verticalScale));
         private int RowPaddingY => Math.Max(3, (int)Math.Round(BaseRowPaddingY * _verticalScale));
@@ -1905,6 +1921,18 @@ public sealed class MacroTrimEditorForm : Form
                 EnsureLayout(GetPlotBounds());
             }
 
+            Invalidate();
+        }
+
+        public void SetViewport(Point offset, Size size)
+        {
+            if (_viewportOffset == offset && _viewportSize == size)
+            {
+                return;
+            }
+
+            _viewportOffset = offset;
+            _viewportSize = size;
             Invalidate();
         }
 
@@ -1954,7 +1982,7 @@ public sealed class MacroTrimEditorForm : Form
             if (e.Button == MouseButtons.Middle)
             {
                 _isPanning = true;
-                _lastPanPoint = e.Location;
+                _lastPanPoint = MousePosition;
                 Cursor = Cursors.SizeAll;
                 Capture = true;
                 return;
@@ -2000,8 +2028,9 @@ public sealed class MacroTrimEditorForm : Form
             base.OnMouseMove(e);
             if (_isPanning)
             {
-                var panDelta = new Point(e.X - _lastPanPoint.X, e.Y - _lastPanPoint.Y);
-                _lastPanPoint = e.Location;
+                var currentPoint = MousePosition;
+                var panDelta = new Point(currentPoint.X - _lastPanPoint.X, currentPoint.Y - _lastPanPoint.Y);
+                _lastPanPoint = currentPoint;
                 if (panDelta != Point.Empty)
                 {
                     PanRequested?.Invoke(panDelta);
@@ -2114,6 +2143,7 @@ public sealed class MacroTrimEditorForm : Form
 
             DrawTrimRange(canvas, plot);
             DrawDraggingPreview(canvas, plot);
+            DrawFrozenLabels(canvas);
             DrawCurrentTime(canvas, plot);
             DrawSelectedPlayhead(canvas, plot);
         }
@@ -2383,7 +2413,25 @@ public sealed class MacroTrimEditorForm : Form
                 var rect = new Rectangle(0, row.Y, Width, row.Height);
                 canvas.DrawRect(ToSKRect(rect), i % 2 == 0 ? rowFill : alternateFill);
                 canvas.DrawRect(ToSKRect(rect), border);
-                DrawSkText(canvas, row.Label, 12, row.Y + row.Height / 2F + 4, 12, GetRowColor(row.Kind, 230));
+            }
+        }
+
+        private void DrawFrozenLabels(SKCanvas canvas)
+        {
+            if (_layout is null)
+            {
+                return;
+            }
+
+            var x = _viewportOffset.X;
+            using var labelFill = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(20, 23, 28, 245) };
+            using var labelBorder = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(52, 58, 66, 235) };
+            foreach (var row in _layout.Rows)
+            {
+                var rect = new Rectangle(x, row.Y, LabelWidth, row.Height);
+                canvas.DrawRect(ToSKRect(rect), labelFill);
+                canvas.DrawRect(ToSKRect(rect), labelBorder);
+                DrawSkText(canvas, row.Label, x + 12, row.Y + row.Height / 2F + 4, 12, GetRowColor(row.Kind, 235));
             }
         }
 
