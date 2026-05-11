@@ -833,8 +833,9 @@ public sealed class MacroTrimEditorForm : Form
 
         var originalStartMs = Math.Min(startEvent.TimeOffsetMs, endEvent.TimeOffsetMs);
         var originalEndMs = Math.Max(startEvent.TimeOffsetMs, endEvent.TimeOffsetMs);
-        var minStart = 0L;
-        var maxEnd = (long)duration;
+        var bounds = GetSameInputBounds(key, originalStartMs, originalEndMs, startIndex, endIndex, duration);
+        var minStart = bounds.MinMs;
+        var maxEnd = bounds.MaxMs;
         foreach (var pair in GetPairedIntervals())
         {
             if (pair.Key != key || (pair.StartIndex == startIndex && pair.EndIndex == endIndex))
@@ -861,7 +862,26 @@ public sealed class MacroTrimEditorForm : Form
             return false;
         }
 
-        startMs = Math.Clamp(startMs, minStart, maxEnd - 1);
+        var originalLength = Math.Max(1, originalEndMs - originalStartMs);
+        var requestedStartDelta = startMs - startEvent.TimeOffsetMs;
+        var requestedEndDelta = endMs - endEvent.TimeOffsetMs;
+        var isRangeMove = Math.Abs(requestedStartDelta - requestedEndDelta) <= 1;
+        if (isRangeMove)
+        {
+            var minDelta = minStart - originalStartMs;
+            var maxDelta = maxEnd - originalEndMs;
+            if (maxDelta < minDelta)
+            {
+                return false;
+            }
+
+            var delta = Math.Clamp(requestedStartDelta, minDelta, maxDelta);
+            startMs = originalStartMs + delta;
+            endMs = originalEndMs + delta;
+            return endMs > startMs;
+        }
+
+        startMs = Math.Clamp(startMs, minStart, Math.Min(maxEnd - 1, endMs - 1));
         endMs = Math.Clamp(endMs, startMs + 1, maxEnd);
         return endMs > startMs;
     }
@@ -878,8 +898,9 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         var originalMs = macroEvent.TimeOffsetMs;
-        var minMs = 0L;
-        var maxMs = (long)duration;
+        var bounds = GetSameInputBounds(key, originalMs, originalMs, index, index, duration);
+        var minMs = bounds.MinMs;
+        var maxMs = bounds.MaxMs;
         var pairedIndex = FindPairedEventIndex(_events, index);
         if (pairedIndex is not null)
         {
@@ -922,6 +943,37 @@ public sealed class MacroTrimEditorForm : Form
 
         timeMs = Math.Clamp(timeMs, minMs, maxMs);
         return true;
+    }
+
+    private (long MinMs, long MaxMs) GetSameInputBounds(
+        string key,
+        long originalStartMs,
+        long originalEndMs,
+        int startIndex,
+        int endIndex,
+        long duration)
+    {
+        var minMs = 0L;
+        var maxMs = duration;
+        for (var i = 0; i < _events.Count; i++)
+        {
+            if (i == startIndex || i == endIndex || GetOverlapKey(_events[i]) != key)
+            {
+                continue;
+            }
+
+            var eventMs = _events[i].TimeOffsetMs;
+            if (eventMs <= originalStartMs)
+            {
+                minMs = Math.Max(minMs, eventMs + 1);
+            }
+            else if (eventMs >= originalEndMs)
+            {
+                maxMs = Math.Min(maxMs, Math.Max(0, eventMs - 1));
+            }
+        }
+
+        return (minMs, maxMs);
     }
 
     private void SortEventsPreservingSelection(int preferredIndex)
@@ -2105,6 +2157,7 @@ public sealed class MacroTrimEditorForm : Form
             EnsureLayout(GetPlotBounds());
             var hit = _hits
                 .OrderBy(item => DistanceSquared(item.Bounds, e.Location))
+                .ThenBy(item => GetHitPriority(item.EditKind))
                 .FirstOrDefault(item =>
                 {
                     var bounds = item.Bounds;
@@ -2755,6 +2808,16 @@ public sealed class MacroTrimEditorForm : Form
             var dx = cx - point.X;
             var dy = cy - point.Y;
             return dx * dx + dy * dy;
+        }
+
+        private static int GetHitPriority(TimelineEditKind kind)
+        {
+            return kind switch
+            {
+                TimelineEditKind.Start or TimelineEditKind.End => 0,
+                TimelineEditKind.Range => 1,
+                _ => 2
+            };
         }
 
         private static long CreateEventSignature(List<MacroEvent> events)
