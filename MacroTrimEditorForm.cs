@@ -1655,8 +1655,9 @@ public sealed class MacroTrimEditorForm : Form
 
     private sealed class EventCaptureDialog : Form, IMessageFilter
     {
+        private const int FixedReleaseDelayMs = 60;
+
         private readonly Label _messageLabel = new();
-        private readonly NumericUpDown _releaseDelayBox = new();
         private readonly Button _cancelButton = new();
         private readonly NativeMethods.HookProc _mouseProc;
         private IntPtr _mouseHook;
@@ -1670,38 +1671,18 @@ public sealed class MacroTrimEditorForm : Form
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(420, 168);
+            ClientSize = new Size(420, 126);
             KeyPreview = true;
             BackColor = Color.FromArgb(34, 37, 43);
             ForeColor = Color.White;
             Font = new Font("Yu Gothic UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
-            _messageLabel.Text = "追加したいキーまたはマウスボタンを押してください。\r\n押下イベントを追加し、解放イベントは指定時間後に自動追加します。";
+            _messageLabel.Text = "追加したいキーまたはマウスボタンを押してください。\r\n押下イベントを追加し、解放イベントは60ms後に自動追加します。";
             _messageLabel.Dock = DockStyle.Top;
-            _messageLabel.Height = 74;
+            _messageLabel.Height = 88;
             _messageLabel.TextAlign = ContentAlignment.MiddleCenter;
             _messageLabel.ForeColor = Color.FromArgb(230, 234, 240);
             Controls.Add(_messageLabel);
-
-            var delayLabel = new Label
-            {
-                Text = "解放まで(ms)",
-                Left = 84,
-                Top = 88,
-                Width = 105,
-                Height = 24,
-                TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = Color.FromArgb(220, 224, 230)
-            };
-            Controls.Add(delayLabel);
-
-            _releaseDelayBox.Minimum = 1;
-            _releaseDelayBox.Maximum = 10000;
-            _releaseDelayBox.Value = 60;
-            _releaseDelayBox.Left = 196;
-            _releaseDelayBox.Top = 86;
-            _releaseDelayBox.Width = 110;
-            Controls.Add(_releaseDelayBox);
 
             _cancelButton.Text = "キャンセル";
             _cancelButton.Dock = DockStyle.Bottom;
@@ -1711,7 +1692,7 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         public MacroEvent? CapturedEvent { get; private set; }
-        public int ReleaseDelayMs => (int)_releaseDelayBox.Value;
+        public int ReleaseDelayMs => FixedReleaseDelayMs;
 
         public bool PreFilterMessage(ref Message m)
         {
@@ -1721,7 +1702,7 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             var target = Control.FromHandle(m.HWnd);
-            if (IsChildOf(target, _releaseDelayBox) || IsChildOf(target, _cancelButton))
+            if (IsChildOf(target, _cancelButton))
             {
                 return false;
             }
@@ -1786,12 +1767,6 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
-            if (_releaseDelayBox.ContainsFocus)
-            {
-                base.OnKeyDown(e);
-                return;
-            }
-
             CapturedEvent = new MacroEvent
             {
                 Kind = MacroEventKind.KeyDown,
@@ -1833,7 +1808,6 @@ public sealed class MacroTrimEditorForm : Form
             var info = Marshal.PtrToStructure<NativeMethods.MouseHookStruct>(lParam);
             var point = new Point(info.Pt.X, info.Pt.Y);
             if (IsPointInFormNonClient(point)
-                || IsPointInControl(_releaseDelayBox, point)
                 || IsPointInControl(_cancelButton, point))
             {
                 return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
