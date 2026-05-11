@@ -1691,21 +1691,17 @@ public partial class Form1 : Form
 
         UpdateButtons();
         var noise = GetNoiseSettings(macro);
-        using var feedbackOverlay = new PlaybackFeedbackOverlayForm();
         try
         {
-            feedbackOverlay.Show();
             await _player.PlayAsync(
                 macro,
                 noise,
                 macro.PlaybackSpeedPercent,
                 Screen.FromControl(this),
-                SetStatus,
-                feedbackOverlay.PostFeedback);
+                SetStatus);
         }
         finally
         {
-            await Task.Delay(320);
             UpdateButtons();
         }
     }

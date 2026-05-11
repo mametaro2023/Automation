@@ -28,12 +28,14 @@ public sealed class MacroTrimEditorForm : Form
     private readonly Stack<EditorSnapshot> _redoStack = new();
     private readonly System.Windows.Forms.Timer _rangeRefreshTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _playbackTimer = new();
+    private readonly PreviewSoundPlayer _editorSoundPlayer = new();
     private readonly System.Diagnostics.Stopwatch _playbackClock = new();
     private bool _rangeRefreshPending;
     private bool _isPreviewPlaying;
     private long _previewStartTimeMs;
     private long _previewBaseTimeMs;
     private long _currentTimeMs;
+    private long _lastEditorFeedbackTimeMs;
     private bool _timelineEditUndoSaved;
     private int? _selectedEventIndex;
     private readonly long _initialTrimStartMs;
@@ -83,6 +85,7 @@ public sealed class MacroTrimEditorForm : Form
         _rangeRefreshTimer.Dispose();
         _playbackTimer.Stop();
         _playbackTimer.Dispose();
+        _editorSoundPlayer.Dispose();
         _canvas.DisposeBackground();
         base.OnFormClosed(e);
     }
@@ -588,6 +591,7 @@ public sealed class MacroTrimEditorForm : Form
         _isPreviewPlaying = true;
         _previewBaseTimeMs = _currentTimeMs;
         _previewStartTimeMs = _playbackClock.ElapsedMilliseconds;
+        _lastEditorFeedbackTimeMs = _currentTimeMs;
         _playbackClock.Start();
         _playbackTimer.Interval = GetRefreshIntervalMs(this);
         _playbackTimer.Start();
@@ -602,6 +606,7 @@ public sealed class MacroTrimEditorForm : Form
         }
 
         var elapsed = _playbackClock.ElapsedMilliseconds - _previewStartTimeMs;
+        var previousTime = _currentTimeMs;
         var nextTime = _previewBaseTimeMs + elapsed;
         if (nextTime >= _trimRange.EndMs)
         {
@@ -610,7 +615,29 @@ public sealed class MacroTrimEditorForm : Form
             _playbackTimer.Stop();
         }
 
+        PlayEditorFeedbackBetween(previousTime, nextTime);
         SetCurrentTime(nextTime);
+    }
+
+    private void PlayEditorFeedbackBetween(long fromMs, long toMs)
+    {
+        if (toMs <= fromMs)
+        {
+            _lastEditorFeedbackTimeMs = toMs;
+            return;
+        }
+
+        var startMs = Math.Max(fromMs, _lastEditorFeedbackTimeMs);
+        foreach (var macroEvent in _events
+                     .Where(IsEventMarker)
+                     .Where(item => item.TimeOffsetMs > startMs && item.TimeOffsetMs <= toMs)
+                     .OrderBy(item => item.TimeOffsetMs))
+        {
+            _canvas.AddPlaybackFeedback(macroEvent);
+            _editorSoundPlayer.Play(macroEvent.Kind);
+        }
+
+        _lastEditorFeedbackTimeMs = toMs;
     }
 
     private void TimelineOnEventTimeEdited(TimelineEditRequest request)
@@ -699,7 +726,13 @@ public sealed class MacroTrimEditorForm : Form
         var duration = Math.Max(1, GetDuration());
         if (startIndex == endIndex)
         {
-            startMs = endMs = Math.Clamp(startMs, 0, duration);
+            var singleMs = startMs;
+            if (!TryNormalizeSingleEvent(startIndex, ref singleMs))
+            {
+                return false;
+            }
+
+            startMs = endMs = singleMs;
             return true;
         }
 
@@ -744,6 +777,64 @@ public sealed class MacroTrimEditorForm : Form
         startMs = Math.Clamp(startMs, minStart, maxEnd - 1);
         endMs = Math.Clamp(endMs, startMs + 1, maxEnd);
         return endMs > startMs;
+    }
+
+    private bool TryNormalizeSingleEvent(int index, ref long timeMs)
+    {
+        var duration = Math.Max(1, GetDuration());
+        var macroEvent = _events[index];
+        var key = GetOverlapKey(macroEvent);
+        if (key is null)
+        {
+            timeMs = Math.Clamp(timeMs, 0, duration);
+            return true;
+        }
+
+        var originalMs = macroEvent.TimeOffsetMs;
+        var minMs = 0L;
+        var maxMs = (long)duration;
+        var pairedIndex = FindPairedEventIndex(_events, index);
+        if (pairedIndex is not null)
+        {
+            var pairedMs = _events[pairedIndex.Value].TimeOffsetMs;
+            if (macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.KeyDown)
+            {
+                maxMs = Math.Min(maxMs, Math.Max(0, pairedMs - 1));
+            }
+            else if (macroEvent.Kind is MacroEventKind.MouseUp or MacroEventKind.KeyUp)
+            {
+                minMs = Math.Max(minMs, pairedMs + 1);
+            }
+        }
+
+        foreach (var pair in GetPairedIntervals())
+        {
+            if (pair.Key != key || pair.StartIndex == index || pair.EndIndex == index)
+            {
+                continue;
+            }
+
+            if (pair.EndMs <= originalMs)
+            {
+                minMs = Math.Max(minMs, pair.EndMs + 1);
+            }
+            else if (pair.StartMs >= originalMs)
+            {
+                maxMs = Math.Min(maxMs, Math.Max(0, pair.StartMs - 1));
+            }
+            else if (timeMs > pair.StartMs && timeMs < pair.EndMs)
+            {
+                return false;
+            }
+        }
+
+        if (maxMs < minMs)
+        {
+            return false;
+        }
+
+        timeMs = Math.Clamp(timeMs, minMs, maxMs);
+        return true;
     }
 
     private void SortEventsPreservingSelection(int preferredIndex)
@@ -2267,7 +2358,12 @@ public sealed class MacroTrimEditorForm : Form
 
     private sealed class MacroEditorCanvas : Panel
     {
+        private const int FeedbackAnimationMs = 260;
+        private const int FeedbackTailMs = 420;
         private readonly List<MarkerHit> _markerHits = new();
+        private readonly List<ActivePlaybackMarker> _activePlaybackMarkers = new();
+        private readonly System.Windows.Forms.Timer _feedbackTimer = new() { Interval = 16 };
+        private readonly System.Diagnostics.Stopwatch _feedbackClock = System.Diagnostics.Stopwatch.StartNew();
         private List<MacroEvent> _events = new();
         private List<TimedEvent> _drawableEvents = new();
         private List<TimedEvent> _markerEvents = new();
@@ -2289,6 +2385,7 @@ public sealed class MacroTrimEditorForm : Form
             DoubleBuffered = true;
             BackColor = Color.FromArgb(16, 18, 21);
             Cursor = Cursors.Default;
+            _feedbackTimer.Tick += (_, _) => FeedbackTimerOnTick();
         }
 
         public event Action<int>? EventSelected;
@@ -2315,6 +2412,7 @@ public sealed class MacroTrimEditorForm : Form
             if (disposing)
             {
                 _baseBitmap?.Dispose();
+                _feedbackTimer.Dispose();
             }
 
             base.Dispose(disposing);
@@ -2328,6 +2426,7 @@ public sealed class MacroTrimEditorForm : Form
             _selectedIndex = selectedIndex;
             _cacheDirty = true;
             _baseCacheDirty = true;
+            _activePlaybackMarkers.Clear();
             Invalidate();
         }
 
@@ -2349,6 +2448,43 @@ public sealed class MacroTrimEditorForm : Form
         public void SetSelection(int? selectedIndex)
         {
             _selectedIndex = selectedIndex;
+            Invalidate();
+        }
+
+        public void AddPlaybackFeedback(MacroEvent macroEvent)
+        {
+            if (!IsEventMarker(macroEvent))
+            {
+                return;
+            }
+
+            EnsureDisplayCache();
+            if (_mapping is null)
+            {
+                return;
+            }
+
+            Point? source = IsDrawablePoint(macroEvent)
+                ? new Point(macroEvent.X, macroEvent.Y)
+                : GetPointAtTime(macroEvent.TimeOffsetMs);
+            if (source is null)
+            {
+                return;
+            }
+
+            var color = macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp
+                ? Color.FromArgb(95, 220, 255)
+                : Color.FromArgb(255, 210, 92);
+            _activePlaybackMarkers.Add(new ActivePlaybackMarker(
+                macroEvent.Kind,
+                _mapping.ToCanvas(source.Value),
+                color,
+                _feedbackClock.ElapsedMilliseconds));
+            if (!_feedbackTimer.Enabled)
+            {
+                _feedbackTimer.Start();
+            }
+
             Invalidate();
         }
 
@@ -2412,6 +2548,7 @@ public sealed class MacroTrimEditorForm : Form
 
             DrawSelectedCallout(e.Graphics, _mapping.ToCanvas);
             DrawCurrentPoint(e.Graphics, _mapping.ToCanvas);
+            DrawPlaybackFeedback(e.Graphics);
         }
 
         private void EnsureDisplayCache()
@@ -2576,6 +2713,83 @@ public sealed class MacroTrimEditorForm : Form
             var rect = new Rectangle(point.X - 6, point.Y - 6, 12, 12);
             graphics.FillEllipse(fill, rect);
             graphics.DrawEllipse(outline, rect);
+        }
+
+        private void DrawPlaybackFeedback(Graphics graphics)
+        {
+            if (_activePlaybackMarkers.Count == 0)
+            {
+                return;
+            }
+
+            var now = _feedbackClock.ElapsedMilliseconds;
+            foreach (var marker in _activePlaybackMarkers)
+            {
+                var age = now - marker.StartMs;
+                var visual = GetFeedbackVisual(marker.Kind, age);
+                if (visual.Alpha <= 0)
+                {
+                    continue;
+                }
+
+                using var pen = new Pen(Color.FromArgb(visual.Alpha, marker.Color), visual.Width)
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round
+                };
+                DrawFeedbackCross(graphics, pen, marker.Point, marker.Kind, visual.Size);
+            }
+        }
+
+        private void FeedbackTimerOnTick()
+        {
+            var now = _feedbackClock.ElapsedMilliseconds;
+            _activePlaybackMarkers.RemoveAll(marker => now - marker.StartMs > FeedbackTailMs);
+            if (_activePlaybackMarkers.Count == 0)
+            {
+                _feedbackTimer.Stop();
+            }
+
+            Invalidate();
+        }
+
+        private static FeedbackVisual GetFeedbackVisual(MacroEventKind kind, long ageMs)
+        {
+            var isRelease = kind is MacroEventKind.MouseUp or MacroEventKind.KeyUp;
+            var baseSize = kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? 10 : 8;
+            if (ageMs <= FeedbackAnimationMs)
+            {
+                var progress = SmoothStep(ageMs / (double)FeedbackAnimationMs);
+                var size = isRelease
+                    ? (int)Math.Round(Lerp(baseSize, 24, progress))
+                    : (int)Math.Round(Lerp(24, baseSize, progress));
+                var alpha = isRelease
+                    ? (int)Math.Round(Lerp(255, 0, progress))
+                    : (int)Math.Round(Lerp(50, 255, progress));
+                return new FeedbackVisual(size, alpha, 3);
+            }
+
+            var tailProgress = Math.Clamp((ageMs - FeedbackAnimationMs) / (double)Math.Max(1, FeedbackTailMs - FeedbackAnimationMs), 0.0, 1.0);
+            var tailAlpha = (int)Math.Round(Lerp(isRelease ? 0 : 150, 0, tailProgress));
+            return new FeedbackVisual(baseSize, tailAlpha, 2);
+        }
+
+        private static void DrawFeedbackCross(Graphics graphics, Pen pen, Point point, MacroEventKind kind, int size)
+        {
+            var adjusted = kind is MacroEventKind.KeyDown or MacroEventKind.KeyUp ? size + 2 : size;
+            graphics.DrawLine(pen, point.X - adjusted, point.Y - adjusted, point.X + adjusted, point.Y + adjusted);
+            graphics.DrawLine(pen, point.X - adjusted, point.Y + adjusted, point.X + adjusted, point.Y - adjusted);
+        }
+
+        private static double SmoothStep(double value)
+        {
+            var t = Math.Clamp(value, 0.0, 1.0);
+            return t * t * (3.0 - 2.0 * t);
+        }
+
+        private static double Lerp(double from, double to, double progress)
+        {
+            return from + (to - from) * progress;
         }
 
         private Point? GetPointAtTime(long timeMs)
@@ -2771,6 +2985,8 @@ public sealed class MacroTrimEditorForm : Form
         private sealed record TimedEvent(int Index, MacroEvent Event);
         private sealed record TimedCanvasPoint(long TimeMs, Point Point);
         private sealed record MarkerHit(int EventIndex, Point Location);
+        private sealed record ActivePlaybackMarker(MacroEventKind Kind, Point Point, Color Color, long StartMs);
+        private readonly record struct FeedbackVisual(int Size, int Alpha, int Width);
         private sealed record CanvasMapping(Func<Point, Point> ToCanvas, Func<Point, Point> ToSource);
     }
 }
