@@ -1658,10 +1658,13 @@ public sealed class MacroTrimEditorForm : Form
         private readonly Label _messageLabel = new();
         private readonly NumericUpDown _releaseDelayBox = new();
         private readonly Button _cancelButton = new();
+        private readonly NativeMethods.HookProc _mouseProc;
+        private IntPtr _mouseHook;
         private bool _messageFilterRegistered;
 
         public EventCaptureDialog()
         {
+            _mouseProc = MouseHookCallback;
             Text = "イベント追加";
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -1755,10 +1758,17 @@ public sealed class MacroTrimEditorForm : Form
             base.OnShown(e);
             Application.AddMessageFilter(this);
             _messageFilterRegistered = true;
+            _mouseHook = NativeMethods.SetWindowsHookEx(NativeMethods.WH_MOUSE_LL, _mouseProc, IntPtr.Zero, 0);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            if (_mouseHook != IntPtr.Zero)
+            {
+                NativeMethods.UnhookWindowsHookEx(_mouseHook);
+                _mouseHook = IntPtr.Zero;
+            }
+
             if (_messageFilterRegistered)
             {
                 Application.RemoveMessageFilter(this);
@@ -1771,6 +1781,12 @@ public sealed class MacroTrimEditorForm : Form
         protected override void OnKeyDown(KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Escape)
+            {
+                base.OnKeyDown(e);
+                return;
+            }
+
+            if (_releaseDelayBox.ContainsFocus)
             {
                 base.OnKeyDown(e);
                 return;
@@ -1807,6 +1823,51 @@ public sealed class MacroTrimEditorForm : Form
             DialogResult = DialogResult.OK;
         }
 
+        private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode < 0)
+            {
+                return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+            }
+
+            var info = Marshal.PtrToStructure<NativeMethods.MouseHookStruct>(lParam);
+            var point = new Point(info.Pt.X, info.Pt.Y);
+            if (IsPointInFormNonClient(point)
+                || IsPointInControl(_releaseDelayBox, point)
+                || IsPointInControl(_cancelButton, point))
+            {
+                return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+            }
+
+            switch (wParam.ToInt32())
+            {
+                case NativeMethods.WM_LBUTTONDOWN:
+                    BeginCaptureMouseButton(RecordedMouseButton.Left);
+                    return (IntPtr)1;
+                case NativeMethods.WM_RBUTTONDOWN:
+                    BeginCaptureMouseButton(RecordedMouseButton.Right);
+                    return (IntPtr)1;
+                case NativeMethods.WM_MBUTTONDOWN:
+                    BeginCaptureMouseButton(RecordedMouseButton.Middle);
+                    return (IntPtr)1;
+                case NativeMethods.WM_XBUTTONDOWN:
+                    BeginCaptureMouseButton(GetXButton(info.MouseData));
+                    return (IntPtr)1;
+                default:
+                    return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+            }
+        }
+
+        private void BeginCaptureMouseButton(RecordedMouseButton button)
+        {
+            if (button == RecordedMouseButton.None || IsDisposed)
+            {
+                return;
+            }
+
+            BeginInvoke((Action)(() => CaptureMouseButton(button)));
+        }
+
         private void CaptureMouseButton(RecordedMouseButton button)
         {
             if (button == RecordedMouseButton.None)
@@ -1820,6 +1881,27 @@ public sealed class MacroTrimEditorForm : Form
                 Button = button
             };
             DialogResult = DialogResult.OK;
+        }
+
+        private bool IsPointInFormNonClient(Point screenPoint)
+        {
+            if (!Bounds.Contains(screenPoint))
+            {
+                return false;
+            }
+
+            return !ClientRectangle.Contains(PointToClient(screenPoint));
+        }
+
+        private static bool IsPointInControl(Control control, Point screenPoint)
+        {
+            if (!control.Visible || !control.IsHandleCreated)
+            {
+                return false;
+            }
+
+            var clientPoint = control.PointToClient(screenPoint);
+            return control.ClientRectangle.Contains(clientPoint);
         }
 
         private bool IsDialogMessageTarget(IntPtr handle)
@@ -1861,6 +1943,17 @@ public sealed class MacroTrimEditorForm : Form
         private static RecordedMouseButton GetXButton(IntPtr wParam)
         {
             var xButton = unchecked((short)(((long)wParam >> 16) & 0xFFFF));
+            return xButton switch
+            {
+                1 => RecordedMouseButton.XButton1,
+                2 => RecordedMouseButton.XButton2,
+                _ => RecordedMouseButton.None
+            };
+        }
+
+        private static RecordedMouseButton GetXButton(int mouseData)
+        {
+            var xButton = unchecked((short)((mouseData >> 16) & 0xFFFF));
             return xButton switch
             {
                 1 => RecordedMouseButton.XButton1,
