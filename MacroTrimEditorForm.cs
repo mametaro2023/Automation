@@ -392,13 +392,18 @@ public sealed class MacroTrimEditorForm : Form
         panel.Controls.Add(_rangeLabel, 0, 0);
         panel.SetColumnSpan(_rangeLabel, 2);
 
-        var timelineHost = new Panel
+        var timelineHost = new TimelineScrollHostPanel
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
             BackColor = Color.FromArgb(18, 20, 24),
             Padding = Padding.Empty,
             Margin = Padding.Empty
+        };
+        timelineHost.WheelRequested += args =>
+        {
+            var timelinePoint = _timeline.PointToClient(timelineHost.PointToScreen(args.Location));
+            _timeline.HandleTimelineWheel(args.Delta, timelinePoint, ModifierKeys);
         };
         var timelineWidth = 0;
         void CenterTimelineOnPlayhead()
@@ -1848,6 +1853,16 @@ public sealed class MacroTrimEditorForm : Form
         }
     }
 
+    private sealed class TimelineScrollHostPanel : Panel
+    {
+        public event Action<MouseEventArgs>? WheelRequested;
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            WheelRequested?.Invoke(e);
+        }
+    }
+
     private sealed class MacroTimelineControl : SKControl
     {
         private const int LabelWidth = 112;
@@ -2102,16 +2117,25 @@ public sealed class MacroTrimEditorForm : Form
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            base.OnMouseWheel(e);
-            Focus();
-            var factor = e.Delta > 0 ? 1.12 : 1.0 / 1.12;
-            if ((ModifierKeys & Keys.Control) == Keys.Control)
+            HandleTimelineWheel(e.Delta, e.Location, ModifierKeys);
+        }
+
+        public void HandleTimelineWheel(int delta, Point location, Keys modifierKeys)
+        {
+            if (delta == 0)
             {
-                VerticalZoomRequested?.Invoke(factor, e.Y);
+                return;
+            }
+
+            Focus();
+            var factor = delta > 0 ? 1.12 : 1.0 / 1.12;
+            if ((modifierKeys & Keys.Control) == Keys.Control)
+            {
+                VerticalZoomRequested?.Invoke(factor, location.Y);
             }
             else
             {
-                HorizontalZoomRequested?.Invoke(factor, e.X);
+                HorizontalZoomRequested?.Invoke(factor, location.X);
             }
         }
 
