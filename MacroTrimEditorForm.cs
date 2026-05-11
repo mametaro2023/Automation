@@ -2019,6 +2019,7 @@ public sealed class MacroTrimEditorForm : Form
         private const int MinClipWidth = 12;
         private const int PointWidth = 10;
         private const int MinContentHeight = 150;
+        private const int DragStartThresholdPixels = 4;
 
         private readonly List<TimelineHit> _hits = new();
         private TimelineDrag? _drag;
@@ -2176,6 +2177,7 @@ public sealed class MacroTrimEditorForm : Form
                         XToTime(e.X, GetPlotBounds()),
                         _events[hit.StartIndex].TimeOffsetMs,
                         _events[hit.EndIndex].TimeOffsetMs);
+                    _drag.StartMousePoint = e.Location;
                     Capture = true;
                 }
             }
@@ -2204,6 +2206,18 @@ public sealed class MacroTrimEditorForm : Form
             if (_drag is null)
             {
                 return;
+            }
+
+            if (!_drag.HasMoved)
+            {
+                var dx = e.X - _drag.StartMousePoint.X;
+                var dy = e.Y - _drag.StartMousePoint.Y;
+                if ((dx * dx) + (dy * dy) < DragStartThresholdPixels * DragStartThresholdPixels)
+                {
+                    return;
+                }
+
+                _drag.HasMoved = true;
             }
 
             var plot = GetPlotBounds();
@@ -2252,11 +2266,14 @@ public sealed class MacroTrimEditorForm : Form
             Capture = false;
             if (drag is not null)
             {
-                EventTimeEdited?.Invoke(new TimelineEditRequest(
-                    drag.StartEvent,
-                    drag.EndEvent,
-                    drag.PreviewStartMs,
-                    drag.PreviewEndMs));
+                if (drag.HasMoved)
+                {
+                    EventTimeEdited?.Invoke(new TimelineEditRequest(
+                        drag.StartEvent,
+                        drag.EndEvent,
+                        drag.PreviewStartMs,
+                        drag.PreviewEndMs));
+                }
             }
 
             EventTimeEditCompleted?.Invoke();
@@ -2379,9 +2396,9 @@ public sealed class MacroTrimEditorForm : Form
             var y = plot.Top + RulerHeight + RowGap;
             foreach (var row in rows)
             {
-                AssignLanes(row, plot);
+                AssignSingleLane(row);
                 row.Y = y;
-                row.Height = RowPaddingY * 2 + Math.Max(1, row.LaneCount) * LaneHeight;
+                row.Height = RowPaddingY * 2 + LaneHeight;
                 BuildItemGeometry(row, plot);
                 y += row.Height + RowGap;
             }
@@ -2460,39 +2477,14 @@ public sealed class MacroTrimEditorForm : Form
             return row;
         }
 
-        private void AssignLanes(TimelineRow row, Rectangle plot)
+        private static void AssignSingleLane(TimelineRow row)
         {
-            var laneRightEdges = new List<int>();
-            foreach (var item in row.Items.OrderBy(item => item.StartMs).ThenBy(item => item.EndMs))
+            foreach (var item in row.Items)
             {
-                var left = TimeToX(item.StartMs, plot);
-                var right = item.IsClip
-                    ? Math.Max(TimeToX(item.EndMs, plot), left + MinClipWidth)
-                    : left + PointWidth;
-                var labelReserve = Math.Min(96, Math.Max(38, GetShortEventLabel(item.StartEvent).Length * 7 + 14));
-                var requiredRight = right + labelReserve + 6;
-                var lane = 0;
-                for (; lane < laneRightEdges.Count; lane++)
-                {
-                    if (left >= laneRightEdges[lane] + 8)
-                    {
-                        break;
-                    }
-                }
-
-                if (lane == laneRightEdges.Count)
-                {
-                    laneRightEdges.Add(requiredRight);
-                }
-                else
-                {
-                    laneRightEdges[lane] = requiredRight;
-                }
-
-                item.Lane = lane;
+                item.Lane = 0;
             }
 
-            row.LaneCount = Math.Max(1, laneRightEdges.Count);
+            row.LaneCount = 1;
         }
 
         private void BuildItemGeometry(TimelineRow row, Rectangle plot)
@@ -2519,7 +2511,6 @@ public sealed class MacroTrimEditorForm : Form
 
                 item.HitBounds = item.Bounds;
                 item.HitBounds.Inflate(item.IsClip ? 0 : 8, item.IsClip ? 7 : 8);
-                item.LabelBounds = GetLabelBounds(item, row, plot);
                 _hits.Add(new TimelineHit(item.StartIndex, item.StartIndex, item.EndIndex, item.HitBounds, TimelineEditKind.Range, row.Key, item.Lane));
                 if (item.IsClip)
                 {
@@ -2527,30 +2518,6 @@ public sealed class MacroTrimEditorForm : Form
                     _hits.Add(new TimelineHit(item.EndIndex, item.StartIndex, item.EndIndex, item.EndHandle, TimelineEditKind.End, row.Key, item.Lane));
                 }
             }
-        }
-
-        private static Rectangle GetLabelBounds(TimelineItem item, TimelineRow row, Rectangle plot)
-        {
-            var text = GetShortEventLabel(item.StartEvent);
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return Rectangle.Empty;
-            }
-
-            var width = Math.Min(90, Math.Max(34, text.Length * 7 + 14));
-            if (item.IsClip && item.Bounds.Width >= width + 10)
-            {
-                return new Rectangle(item.Bounds.Left + 6, item.Bounds.Top - 1, width, item.Bounds.Height + 2);
-            }
-
-            var x = Math.Min(item.Bounds.Right + 6, Math.Max(plot.Left, plot.Right - width));
-            var y = item.Bounds.Top - 2;
-            if (x < item.Bounds.Right + 4)
-            {
-                y = Math.Max(row.Y + 2, item.Bounds.Top - 14);
-            }
-
-            return new Rectangle(x, y, width, 16);
         }
 
         private Rectangle GetPlotBounds()
@@ -2619,19 +2586,6 @@ public sealed class MacroTrimEditorForm : Form
                 canvas.DrawOval(ToSKRect(item.Bounds), fill);
                 canvas.DrawOval(ToSKRect(item.Bounds), outline);
             }
-
-            DrawItemLabel(canvas, item, item.IsClip && item.Bounds.Width >= item.LabelBounds.Width + 10);
-        }
-
-        private static void DrawItemLabel(SKCanvas canvas, TimelineItem item, bool inside)
-        {
-            if (item.LabelBounds == Rectangle.Empty)
-            {
-                return;
-            }
-
-            var color = inside ? new SKColor(18, 20, 24, 235) : new SKColor(232, 236, 242, 235);
-            DrawSkText(canvas, GetShortEventLabel(item.StartEvent), item.LabelBounds.Left, item.LabelBounds.Top + 12, 11, color);
         }
 
         private void DrawTrimRange(SKCanvas canvas, Rectangle plot)
@@ -2904,7 +2858,6 @@ public sealed class MacroTrimEditorForm : Form
             public Rectangle HitBounds { get; set; }
             public Rectangle StartHandle { get; set; }
             public Rectangle EndHandle { get; set; }
-            public Rectangle LabelBounds { get; set; }
 
             public static TimelineItem Clip(MacroEvent startEvent, MacroEvent endEvent, int startIndex, int endIndex)
             {
@@ -2947,6 +2900,8 @@ public sealed class MacroTrimEditorForm : Form
             public long EndMs { get; }
             public long PreviewStartMs { get; set; }
             public long PreviewEndMs { get; set; }
+            public Point StartMousePoint { get; set; }
+            public bool HasMoved { get; set; }
         }
 
         private enum TimelineRowKind
