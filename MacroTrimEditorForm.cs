@@ -380,7 +380,7 @@ public sealed class MacroTrimEditorForm : Form
             Padding = new Padding(12, 8, 12, 8),
             BackColor = Color.FromArgb(34, 37, 43)
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, TimelineLabelControl.LabelColumnWidth));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
@@ -391,6 +391,12 @@ public sealed class MacroTrimEditorForm : Form
         _rangeLabel.ForeColor = Color.White;
         panel.Controls.Add(_rangeLabel, 0, 0);
         panel.SetColumnSpan(_rangeLabel, 2);
+
+        var timelineLabels = new TimelineLabelControl
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty
+        };
 
         var timelineHost = new TimelineScrollHostPanel
         {
@@ -419,6 +425,7 @@ public sealed class MacroTrimEditorForm : Form
             var width = Math.Max(timelineHost.ClientSize.Width, timelineWidth <= 0 ? timelineHost.ClientSize.Width : timelineWidth);
             _timeline.Width = Math.Max(260, width);
             _timeline.Height = Math.Max(_timeline.ContentHeight, timelineHost.ClientSize.Height);
+            timelineLabels.SetContentHeight(_timeline.Height);
             UpdateTimelineViewport();
         }
 
@@ -426,6 +433,7 @@ public sealed class MacroTrimEditorForm : Form
         {
             var current = timelineHost.AutoScrollPosition;
             _timeline.SetViewport(new Point(-current.X, -current.Y), timelineHost.ClientSize);
+            timelineLabels.SetVerticalOffset(-current.Y);
         }
 
         _timeline.Location = Point.Empty;
@@ -434,7 +442,9 @@ public sealed class MacroTrimEditorForm : Form
         _timeline.ContentHeightChanged += height =>
         {
             _timeline.Height = Math.Max(height, timelineHost.ClientSize.Height);
+            timelineLabels.SetContentHeight(_timeline.Height);
         };
+        _timeline.RowHeadersChanged += timelineLabels.SetRows;
         _timeline.PanRequested += delta =>
         {
             var current = timelineHost.AutoScrollPosition;
@@ -470,8 +480,8 @@ public sealed class MacroTrimEditorForm : Form
             ResizeTimeline();
             UpdateTimelineViewport();
         };
-        panel.Controls.Add(timelineHost, 0, 1);
-        panel.SetColumnSpan(timelineHost, 2);
+        panel.Controls.Add(timelineLabels, 0, 1);
+        panel.Controls.Add(timelineHost, 1, 1);
 
         _trimRange.Dock = DockStyle.Fill;
         panel.Controls.Add(_trimRange, 1, 2);
@@ -1863,9 +1873,92 @@ public sealed class MacroTrimEditorForm : Form
         }
     }
 
+    private readonly record struct TimelineRowHeader(string Label, int Y, int Height, SKColor Color);
+
+    private sealed class TimelineLabelControl : SKControl
+    {
+        public const int LabelColumnWidth = 112;
+
+        private IReadOnlyList<TimelineRowHeader> _rows = Array.Empty<TimelineRowHeader>();
+        private int _verticalOffset;
+        private int _contentHeight;
+
+        public TimelineLabelControl()
+        {
+            BackColor = Color.FromArgb(18, 20, 24);
+        }
+
+        public void SetRows(IReadOnlyList<TimelineRowHeader> rows)
+        {
+            _rows = rows;
+            Invalidate();
+        }
+
+        public void SetVerticalOffset(int offset)
+        {
+            if (_verticalOffset == offset)
+            {
+                return;
+            }
+
+            _verticalOffset = offset;
+            Invalidate();
+        }
+
+        public void SetContentHeight(int height)
+        {
+            if (_contentHeight == height)
+            {
+                return;
+            }
+
+            _contentHeight = height;
+            Invalidate();
+        }
+
+        protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
+        {
+            base.OnPaintSurface(e);
+            var canvas = e.Surface.Canvas;
+            canvas.Clear(new SKColor(18, 20, 24));
+
+            using var rowFill = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(20, 23, 28) };
+            using var alternateFill = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(17, 20, 24) };
+            using var border = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(52, 58, 66) };
+            using var divider = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(58, 62, 70) };
+
+            for (var i = 0; i < _rows.Count; i++)
+            {
+                var row = _rows[i];
+                var y = row.Y - _verticalOffset;
+                if (y > Height || y + row.Height < 0)
+                {
+                    continue;
+                }
+
+                var rect = new SKRect(0, y, Width, y + row.Height);
+                canvas.DrawRect(rect, i % 2 == 0 ? rowFill : alternateFill);
+                canvas.DrawRect(rect, border);
+                DrawSkText(canvas, row.Label, 12, y + row.Height / 2F + 4, 12, row.Color);
+            }
+
+            canvas.DrawLine(Width - 1, 0, Width - 1, Math.Max(Height, _contentHeight - _verticalOffset), divider);
+        }
+
+        private static void DrawSkText(SKCanvas canvas, string text, float x, float baseline, float size, SKColor color)
+        {
+            using var font = new SKFont(SKTypeface.FromFamilyName("Yu Gothic UI"), size);
+            using var paint = new SKPaint
+            {
+                IsAntialias = true,
+                Color = color
+            };
+            canvas.DrawText(text, x, baseline, font, paint);
+        }
+    }
+
     private sealed class MacroTimelineControl : SKControl
     {
-        private const int LabelWidth = 112;
         private const int RulerHeight = 26;
         private const int BaseLaneHeight = 24;
         private const int BaseRowPaddingY = 6;
@@ -1908,6 +2001,7 @@ public sealed class MacroTrimEditorForm : Form
         public event Action<TimelineEditRequest>? EventTimeEdited;
         public event Action? EventTimeEditCompleted;
         public event Action<int>? ContentHeightChanged;
+        public event Action<IReadOnlyList<TimelineRowHeader>>? RowHeadersChanged;
         public event Action<Point>? PanRequested;
         public event Action<double, int>? HorizontalZoomRequested;
         public event Action<double, int>? VerticalZoomRequested;
@@ -2167,7 +2261,6 @@ public sealed class MacroTrimEditorForm : Form
 
             DrawTrimRange(canvas, plot);
             DrawDraggingPreview(canvas, plot);
-            DrawFrozenLabels(canvas);
             DrawCurrentTime(canvas, plot);
             DrawSelectedPlayhead(canvas, plot);
         }
@@ -2217,6 +2310,9 @@ public sealed class MacroTrimEditorForm : Form
             _hits.Clear();
             var layout = BuildLayout(plot);
             _layout = layout;
+            RowHeadersChanged?.Invoke(layout.Rows
+                .Select(row => new TimelineRowHeader(row.Label, row.Y, row.Height, GetRowColor(row.Kind, 235)))
+                .ToList());
             if (_contentHeight != layout.ContentHeight)
             {
                 _contentHeight = layout.ContentHeight;
@@ -2406,7 +2502,7 @@ public sealed class MacroTrimEditorForm : Form
 
         private Rectangle GetPlotBounds()
         {
-            return new Rectangle(LabelWidth, 4, Math.Max(1, Width - LabelWidth - 10), Math.Max(1, Math.Max(Height, _contentHeight) - 12));
+            return new Rectangle(0, 4, Math.Max(1, Width - 10), Math.Max(1, Math.Max(Height, _contentHeight) - 12));
         }
 
         private void DrawRuler(SKCanvas canvas, Rectangle plot)
@@ -2437,25 +2533,6 @@ public sealed class MacroTrimEditorForm : Form
                 var rect = new Rectangle(0, row.Y, Width, row.Height);
                 canvas.DrawRect(ToSKRect(rect), i % 2 == 0 ? rowFill : alternateFill);
                 canvas.DrawRect(ToSKRect(rect), border);
-            }
-        }
-
-        private void DrawFrozenLabels(SKCanvas canvas)
-        {
-            if (_layout is null)
-            {
-                return;
-            }
-
-            var x = _viewportOffset.X;
-            using var labelFill = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill, Color = new SKColor(20, 23, 28, 245) };
-            using var labelBorder = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = 1, Color = new SKColor(52, 58, 66, 235) };
-            foreach (var row in _layout.Rows)
-            {
-                var rect = new Rectangle(x, row.Y, LabelWidth, row.Height);
-                canvas.DrawRect(ToSKRect(rect), labelFill);
-                canvas.DrawRect(ToSKRect(rect), labelBorder);
-                DrawSkText(canvas, row.Label, x + 12, row.Y + row.Height / 2F + 4, 12, GetRowColor(row.Kind, 235));
             }
         }
 
