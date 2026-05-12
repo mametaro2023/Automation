@@ -154,6 +154,7 @@ public sealed class MacroPlayer : IDisposable
                         downPoint,
                         frameIntervalMs,
                         motionProfile,
+                        noise.LearnedTrajectoryTolerancePx,
                         false);
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, downPoint, macroEvent.Button, true));
                     currentPosition = downPoint;
@@ -184,6 +185,7 @@ public sealed class MacroPlayer : IDisposable
                         upPoint,
                         frameIntervalMs,
                         motionProfile,
+                        noise.LearnedTrajectoryTolerancePx,
                         pressedPositions.ContainsKey(macroEvent.Button));
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, upPoint, macroEvent.Button, false));
                     currentPosition = upPoint;
@@ -202,6 +204,7 @@ public sealed class MacroPlayer : IDisposable
                         wheelPoint,
                         frameIntervalMs,
                         motionProfile,
+                        noise.LearnedTrajectoryTolerancePx,
                         false);
                     actions.Add(PlaybackAction.MouseWheel(currentTimeMs, wheelPoint, macroEvent.WheelDelta));
                     currentPosition = wheelPoint;
@@ -305,6 +308,8 @@ public sealed class MacroPlayer : IDisposable
             endTimeMs,
             frameIntervalMs,
             isDragging,
+            noise.LearnedTrajectoryTolerancePx,
+            samples.Select(item => new HumanMotionReferencePoint(item.TimeMs, item.Point)).ToList(),
             _random,
             out var learnedPath))
         {
@@ -478,6 +483,7 @@ public sealed class MacroPlayer : IDisposable
         Point end,
         double frameIntervalMs,
         HumanMotionProfile? motionProfile,
+        int learnedTolerancePx,
         bool isDragging)
     {
         if (start == end)
@@ -498,6 +504,8 @@ public sealed class MacroPlayer : IDisposable
             endTimeMs,
             frameIntervalMs,
             isDragging,
+            learnedTolerancePx,
+            CreateLinearReference(start, startTimeMs, end, endTimeMs),
             _random,
             out var learnedPath))
         {
@@ -550,6 +558,19 @@ public sealed class MacroPlayer : IDisposable
             CurveB = RandomSigned(amplitude * 0.18, amplitude * 0.45),
             NormalX = normalX,
             NormalY = normalY
+        };
+    }
+
+    private static List<HumanMotionReferencePoint> CreateLinearReference(
+        Point start,
+        double startTimeMs,
+        Point end,
+        double endTimeMs)
+    {
+        return new List<HumanMotionReferencePoint>
+        {
+            new(startTimeMs, start),
+            new(endTimeMs, end)
         };
     }
 

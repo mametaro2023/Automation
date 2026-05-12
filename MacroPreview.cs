@@ -236,6 +236,8 @@ public static class MacroPreviewBuilder
             segment[^1].TimeOffsetMs,
             8.0,
             isDragging,
+            noise.LearnedTrajectoryTolerancePx,
+            segment.Select(item => new HumanMotionReferencePoint(item.TimeOffsetMs, new Point(item.X, item.Y))).ToList(),
             random,
             out var learnedPath))
         {

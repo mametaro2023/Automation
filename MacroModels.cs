@@ -173,6 +173,7 @@ public sealed class NoiseSettings
     public int TimeJitterMs { get; set; } = 20;
     public int AccelerationJitterPercent { get; set; } = 12;
     public int TrajectoryJitterPx { get; set; } = 16;
+    public int LearnedTrajectoryTolerancePx { get; set; } = 120;
 }
 
 public sealed class MacroFile

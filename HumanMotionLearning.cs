@@ -36,6 +36,8 @@ public sealed class HumanHoldSample
 
 public readonly record struct HumanMotionPathPoint(double TimeMs, Point Point);
 
+public readonly record struct HumanMotionReferencePoint(double TimeMs, Point Point);
+
 public static class HumanMotionStore
 {
     private const string FileName = "human-motion-profile.json";
@@ -355,6 +357,8 @@ public static class HumanMotionPathGenerator
         double endTimeMs,
         double frameIntervalMs,
         bool isDragging,
+        int maxReferenceDeviationPx,
+        IReadOnlyList<HumanMotionReferencePoint>? referencePath,
         Random random,
         out List<HumanMotionPathPoint> path)
     {
@@ -372,20 +376,57 @@ public static class HumanMotionPathGenerator
             return false;
         }
 
-        var sample = SelectSample(profile, distance, duration, isDragging, random);
-        if (sample is null || sample.Points.Count < 2)
-        {
-            return false;
-        }
-
         var unitX = dx / distance;
         var unitY = dy / distance;
         var normalX = -unitY;
         var normalY = unitX;
-        var sideSign = random.Next(0, 2) == 0 ? -1.0 : 1.0;
-        var sideScale = 0.85 + random.NextDouble() * 0.3;
-        var nextFrame = Math.Ceiling((startTimeMs + 0.001) / frameIntervalMs) * frameIntervalMs;
+        foreach (var sample in SelectSamples(profile, distance, duration, isDragging, random))
+        {
+            foreach (var sideSign in GetSideSigns(random))
+            {
+                path = CreatePath(
+                    sample,
+                    start,
+                    end,
+                    startTimeMs,
+                    endTimeMs,
+                    frameIntervalMs,
+                    distance,
+                    unitX,
+                    unitY,
+                    normalX,
+                    normalY,
+                    sideSign,
+                    0.85 + random.NextDouble() * 0.3);
+                if (PathFitsReference(path, referencePath, maxReferenceDeviationPx))
+                {
+                    return true;
+                }
+            }
+        }
 
+        path.Clear();
+        return false;
+    }
+
+    private static List<HumanMotionPathPoint> CreatePath(
+        HumanMotionSample sample,
+        Point start,
+        Point end,
+        double startTimeMs,
+        double endTimeMs,
+        double frameIntervalMs,
+        double distance,
+        double unitX,
+        double unitY,
+        double normalX,
+        double normalY,
+        double sideSign,
+        double sideScale)
+    {
+        var path = new List<HumanMotionPathPoint>();
+        var duration = endTimeMs - startTimeMs;
+        var nextFrame = Math.Ceiling((startTimeMs + 0.001) / frameIntervalMs) * frameIntervalMs;
         for (var timeMs = nextFrame; timeMs < endTimeMs; timeMs += frameIntervalMs)
         {
             var progress = Math.Clamp((timeMs - startTimeMs) / Math.Max(0.001, duration), 0.0, 1.0);
@@ -393,10 +434,10 @@ public static class HumanMotionPathGenerator
         }
 
         path.Add(new HumanMotionPathPoint(endTimeMs, end));
-        return true;
+        return path;
     }
 
-    private static HumanMotionSample? SelectSample(
+    private static List<HumanMotionSample> SelectSamples(
         HumanMotionProfile profile,
         double distance,
         double duration,
@@ -416,10 +457,10 @@ public static class HumanMotionPathGenerator
 
         if (candidates.Count == 0)
         {
-            return null;
+            return new List<HumanMotionSample>();
         }
 
-        var top = candidates
+        return candidates
             .Select(item => new
             {
                 Sample = item,
@@ -428,10 +469,73 @@ public static class HumanMotionPathGenerator
                     + (item.IsDragging == isDragging ? 0.0 : 0.8)
             })
             .OrderBy(item => item.Score)
-            .Take(Math.Min(8, candidates.Count))
+            .ThenBy(_ => random.Next())
+            .Take(Math.Min(12, candidates.Count))
+            .Select(item => item.Sample)
             .ToList();
+    }
 
-        return top[random.Next(top.Count)].Sample;
+    private static double[] GetSideSigns(Random random)
+    {
+        return random.Next(0, 2) == 0
+            ? new[] { -1.0, 1.0 }
+            : new[] { 1.0, -1.0 };
+    }
+
+    private static bool PathFitsReference(
+        IReadOnlyList<HumanMotionPathPoint> path,
+        IReadOnlyList<HumanMotionReferencePoint>? referencePath,
+        int maxReferenceDeviationPx)
+    {
+        if (referencePath is null || referencePath.Count < 2)
+        {
+            return true;
+        }
+
+        if (maxReferenceDeviationPx <= 0)
+        {
+            return false;
+        }
+
+        var maxSquared = maxReferenceDeviationPx * maxReferenceDeviationPx;
+        foreach (var point in path)
+        {
+            var reference = InterpolateReference(referencePath, point.TimeMs);
+            var dx = point.Point.X - reference.X;
+            var dy = point.Point.Y - reference.Y;
+            if (dx * dx + dy * dy > maxSquared)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static Point InterpolateReference(IReadOnlyList<HumanMotionReferencePoint> referencePath, double timeMs)
+    {
+        if (timeMs <= referencePath[0].TimeMs)
+        {
+            return referencePath[0].Point;
+        }
+
+        for (var i = 1; i < referencePath.Count; i++)
+        {
+            var next = referencePath[i];
+            if (next.TimeMs < timeMs)
+            {
+                continue;
+            }
+
+            var previous = referencePath[i - 1];
+            var span = Math.Max(0.001, next.TimeMs - previous.TimeMs);
+            var t = Math.Clamp((timeMs - previous.TimeMs) / span, 0.0, 1.0);
+            return new Point(
+                (int)Math.Round(previous.Point.X + (next.Point.X - previous.Point.X) * t),
+                (int)Math.Round(previous.Point.Y + (next.Point.Y - previous.Point.Y) * t));
+        }
+
+        return referencePath[^1].Point;
     }
 
     private static Point WarpPoint(

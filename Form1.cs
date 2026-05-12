@@ -72,6 +72,7 @@ public partial class Form1 : Form
     private NumericUpDown _timeNoiseBox = null!;
     private NumericUpDown _accelNoiseBox = null!;
     private NumericUpDown _trajectoryNoiseBox = null!;
+    private NumericUpDown _learnedToleranceBox = null!;
     private NumericUpDown _previewPathCountBox = null!;
     private NumericUpDown _playbackSpeedBox = null!;
     private CheckBox _captureScreenshotBox = null!;
@@ -533,12 +534,19 @@ public partial class Form1 : Form
             Maximum = 50,
             Value = 12
         }, 160, 118);
+        AddLabeledControl(detailGroup, "学習許容(px)", _learnedToleranceBox = new ScrollFriendlyNumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 1000,
+            Increment = 10,
+            Value = 120
+        }, 188, 118);
         AddLabeledControl(detailGroup, "プレビュー数", _previewPathCountBox = new ScrollFriendlyNumericUpDown
         {
             Minimum = 1,
             Maximum = 10,
             Value = 3
-        }, 188, 118);
+        }, 216, 118);
         WireNoiseSettingChanges();
 
         _summaryLabel = new Label
@@ -1020,7 +1028,7 @@ public partial class Form1 : Form
         }
 
         _advancedSettingsPanel.Visible = visible;
-        _advancedSettingsRow.Height = visible ? 260 : 0;
+        _advancedSettingsRow.Height = visible ? 288 : 0;
         _advancedSettingsPanel.Parent?.PerformLayout();
     }
 
@@ -1045,6 +1053,7 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_timeNoiseBox, "クリックやキー入力の間隔に加える時間揺れです。機械的な一定間隔を避けます。");
         _toolTip.SetToolTip(_trajectoryNoiseBox, "クリック以外のマウス軌道に加える曲がり具合です。大きいほど毎回違う軌道になります。");
         _toolTip.SetToolTip(_accelNoiseBox, "マウス移動中の加速・減速の偏りです。人間らしい速度変化を作ります。");
+        _toolTip.SetToolTip(_learnedToleranceBox, "学習サンプル軌道が元の軌道から外れてよい最大距離です。小さいほど真の軌道に近いサンプルだけ使います。0にするとほぼ学習軌道を使いません。");
         _toolTip.SetToolTip(_previewPathCountBox, "プレビューで表示するノイズ入り軌道の本数です。多いほど揺れ幅を確認できますが画面は混みます。");
     }
 
@@ -2285,7 +2294,8 @@ public partial class Form1 : Form
             TimeJitterPercent = _recordingModeBox.SelectedIndex == 1 ? 0 : (int)_timeNoiseBox.Value,
             TimeJitterMs = _recordingModeBox.SelectedIndex == 1 ? (int)_timeNoiseBox.Value : 20,
             AccelerationJitterPercent = (int)_accelNoiseBox.Value,
-            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value
+            TrajectoryJitterPx = (int)_trajectoryNoiseBox.Value,
+            LearnedTrajectoryTolerancePx = (int)_learnedToleranceBox.Value
         };
     }
 
@@ -2299,6 +2309,7 @@ public partial class Form1 : Form
         _timeNoiseBox.Value = Math.Clamp(timeValue, (int)_timeNoiseBox.Minimum, (int)_timeNoiseBox.Maximum);
         _accelNoiseBox.Value = Math.Clamp(noise.AccelerationJitterPercent, (int)_accelNoiseBox.Minimum, (int)_accelNoiseBox.Maximum);
         _trajectoryNoiseBox.Value = Math.Clamp(noise.TrajectoryJitterPx, (int)_trajectoryNoiseBox.Minimum, (int)_trajectoryNoiseBox.Maximum);
+        _learnedToleranceBox.Value = Math.Clamp(noise.LearnedTrajectoryTolerancePx, (int)_learnedToleranceBox.Minimum, (int)_learnedToleranceBox.Maximum);
     }
 
     private void SetRecordingControls(RecordingOptions recording)
@@ -2336,6 +2347,7 @@ public partial class Form1 : Form
         _timeNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
         _accelNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
         _trajectoryNoiseBox.ValueChanged += NoiseSettingOnValueChanged;
+        _learnedToleranceBox.ValueChanged += NoiseSettingOnValueChanged;
     }
 
     private void NoiseSettingOnValueChanged(object? sender, EventArgs e)
@@ -2435,7 +2447,8 @@ public partial class Form1 : Form
             TimeJitterPercent = source.TimeJitterPercent,
             TimeJitterMs = source.TimeJitterMs,
             AccelerationJitterPercent = source.AccelerationJitterPercent,
-            TrajectoryJitterPx = source.TrajectoryJitterPx
+            TrajectoryJitterPx = source.TrajectoryJitterPx,
+            LearnedTrajectoryTolerancePx = source.LearnedTrajectoryTolerancePx
         };
     }
 
