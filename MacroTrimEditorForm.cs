@@ -522,7 +522,7 @@ public sealed class MacroTrimEditorForm : Form
         _timeline.EventSelected += SelectEvent;
         _timeline.EventTimeEditPreview += TimelineOnEventTimeEditPreview;
         _timeline.EventTimeEdited += TimelineOnEventTimeEdited;
-        _timeline.EventTimeEditCompleted += () => _timelineEditUndoSaved = false;
+        _timeline.EventTimeEditCompleted += TimelineOnEventTimeEditCompleted;
         _timeline.CurrentTimeSelected += SetCurrentTime;
         _trimRange.RangeChanged += (_, _) => QueueRangeRefresh();
         _trimRange.RangeChangeCompleted += (_, _) => FlushRangeRefresh();
@@ -764,7 +764,26 @@ public sealed class MacroTrimEditorForm : Form
 
     private TimelineEditPreview? TimelineOnEventTimeEditPreview(TimelineEditRequest request)
     {
-        return TryNormalizeTimelineEdit(request, out var normalized) ? normalized : null;
+        if (!TryNormalizeTimelineEdit(request, out var normalized))
+        {
+            _canvas.ClearEventTimePreview();
+            return null;
+        }
+
+        var startIndex = _events.IndexOf(request.StartEvent);
+        var endIndex = _events.IndexOf(request.EndEvent);
+        var startPoint = GetPointAtTime(normalized.StartMs, request.StartEvent, request.EndEvent);
+        var endPoint = ReferenceEquals(request.StartEvent, request.EndEvent)
+            ? startPoint
+            : GetPointAtTime(normalized.EndMs, request.StartEvent, request.EndEvent);
+        _canvas.SetEventTimePreview(startIndex, endIndex, normalized.StartMs, normalized.EndMs, startPoint, endPoint);
+        return normalized;
+    }
+
+    private void TimelineOnEventTimeEditCompleted()
+    {
+        _timelineEditUndoSaved = false;
+        _canvas.ClearEventTimePreview();
     }
 
     private void UpdateEditedEventPosition(MacroEvent macroEvent, long timeMs)
@@ -3190,6 +3209,7 @@ public sealed class MacroTrimEditorForm : Form
         private long _currentTimeMs;
         private bool _showCurrentPoint;
         private int? _selectedIndex;
+        private EventTimeCanvasPreview? _eventTimePreview;
         private bool _cacheDirty = true;
         private bool _baseCacheDirty = true;
         public MacroEditorCanvas()
@@ -3260,6 +3280,29 @@ public sealed class MacroTrimEditorForm : Form
         public void SetSelection(int? selectedIndex)
         {
             _selectedIndex = selectedIndex;
+            Invalidate();
+        }
+
+        public void SetEventTimePreview(
+            int startIndex,
+            int endIndex,
+            long startMs,
+            long endMs,
+            Point? startPoint,
+            Point? endPoint)
+        {
+            _eventTimePreview = new EventTimeCanvasPreview(startIndex, endIndex, startMs, endMs, startPoint, endPoint);
+            Invalidate();
+        }
+
+        public void ClearEventTimePreview()
+        {
+            if (_eventTimePreview is null)
+            {
+                return;
+            }
+
+            _eventTimePreview = null;
             Invalidate();
         }
 
@@ -3343,7 +3386,11 @@ public sealed class MacroTrimEditorForm : Form
             DrawTimedPolyline(e.Graphics, _timedCanvasPoints, _startMs, _endMs, Color.FromArgb(235, 235, 70, 72), 3);
 
             var pairRange = GetSelectedPairRange();
-            if (pairRange is not null)
+            if (_eventTimePreview is { } preview)
+            {
+                DrawEventTimePreview(e.Graphics, preview, _mapping.ToCanvas);
+            }
+            else if (pairRange is not null)
             {
                 DrawPath(
                     e.Graphics,
@@ -3361,6 +3408,72 @@ public sealed class MacroTrimEditorForm : Form
             DrawSelectedCallout(e.Graphics, _mapping.ToCanvas);
             DrawCurrentPoint(e.Graphics, _mapping.ToCanvas);
             DrawPlaybackFeedback(e.Graphics);
+        }
+
+        private void DrawEventTimePreview(Graphics graphics, EventTimeCanvasPreview preview, Func<Point, Point> mapper)
+        {
+            DrawPreviewSegment(graphics, preview, mapper, Color.FromArgb(245, 95, 220, 255), 5);
+            DrawPreviewPoint(graphics, preview.StartPoint, mapper, Color.FromArgb(255, 95, 220, 255), 12);
+            if (preview.EndIndex != preview.StartIndex)
+            {
+                DrawPreviewPoint(graphics, preview.EndPoint, mapper, Color.FromArgb(255, 95, 220, 255), 12);
+            }
+        }
+
+        private void DrawPreviewSegment(
+            Graphics graphics,
+            EventTimeCanvasPreview preview,
+            Func<Point, Point> mapper,
+            Color color,
+            int width)
+        {
+            var startMs = Math.Min(preview.StartMs, preview.EndMs);
+            var endMs = Math.Max(preview.StartMs, preview.EndMs);
+            var points = new List<Point>();
+            if (preview.StartPoint is not null)
+            {
+                points.Add(mapper(preview.StartPoint.Value));
+            }
+
+            points.AddRange(_timedCanvasPoints
+                .Where(point => point.TimeMs > startMs && point.TimeMs < endMs)
+                .Select(point => point.Point));
+
+            if (preview.EndPoint is not null && preview.EndMs != preview.StartMs)
+            {
+                points.Add(mapper(preview.EndPoint.Value));
+            }
+
+            points = DrawingPathOptimizer.SimplifyForDisplay(points);
+            if (points.Count < 2)
+            {
+                return;
+            }
+
+            using var pen = new Pen(color, width)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            };
+            graphics.DrawLines(pen, points.ToArray());
+        }
+
+        private static void DrawPreviewPoint(Graphics graphics, Point? point, Func<Point, Point> mapper, Color color, int size)
+        {
+            if (point is null)
+            {
+                return;
+            }
+
+            var mapped = mapper(point.Value);
+            using var pen = new Pen(color, 3)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round
+            };
+            graphics.DrawLine(pen, mapped.X - size, mapped.Y - size, mapped.X + size, mapped.Y + size);
+            graphics.DrawLine(pen, mapped.X - size, mapped.Y + size, mapped.X + size, mapped.Y - size);
         }
 
         private void EnsureDisplayCache()
@@ -3798,6 +3911,7 @@ public sealed class MacroTrimEditorForm : Form
         private sealed record TimedCanvasPoint(long TimeMs, Point Point);
         private sealed record MarkerHit(int EventIndex, Point Location);
         private sealed record ActivePlaybackMarker(MacroEventKind Kind, Point Point, Color Color, long StartMs);
+        private sealed record EventTimeCanvasPreview(int StartIndex, int EndIndex, long StartMs, long EndMs, Point? StartPoint, Point? EndPoint);
         private readonly record struct FeedbackVisual(int Size, int Alpha, int Width);
         private sealed record CanvasMapping(Func<Point, Point> ToCanvas, Func<Point, Point> ToSource);
     }
