@@ -34,14 +34,20 @@ public sealed class MacroPlayer : IDisposable
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         IsPlaying = true;
-        var playbackRate = ResolvePlaybackRate(macro, playbackScreen);
+        var playbackRate = MacroPlaybackPlanner.ResolvePlaybackRate(macro, playbackScreen);
         status?.Invoke($"再生中: {macro.Name} / 最大{playbackRate.Hertz}Hz");
 
         try
         {
             RaiseTimerResolution();
-            var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs, motionProfile);
-            await Task.Run(() => RunTimeline(timeline, token), token);
+            var plan = new MacroPlaybackPlanner(_random).Build(
+                macro,
+                noise,
+                speedPercent,
+                playbackRate.FrameIntervalMs,
+                motionProfile,
+                Cursor.Position);
+            await Task.Run(() => RunTimeline(plan.Actions, token), token);
         }
         catch (OperationCanceledException)
         {
@@ -949,7 +955,6 @@ public sealed class MacroPlayer : IDisposable
 
     private sealed record TimedMacroEvent(double TimeMs, MacroEvent Event);
     private sealed record TimedPoint(double TimeMs, Point Point);
-    private sealed record PlaybackRate(int Hertz, double FrameIntervalMs);
     private sealed record MoveRunSegment(bool IsStationary, List<TimedMacroEvent> Events);
 
     private sealed class PressedInputTracker
@@ -1046,55 +1051,4 @@ public sealed class MacroPlayer : IDisposable
         }
     }
 
-    private enum PlaybackActionKind
-    {
-        MouseMove,
-        MouseDown,
-        MouseUp,
-        MouseWheel,
-        KeyDown,
-        KeyUp
-    }
-
-    private sealed class PlaybackAction
-    {
-        public double TimeMs { get; private init; }
-        public PlaybackActionKind Kind { get; private init; }
-        public Point Point { get; private init; }
-        public RecordedMouseButton Button { get; private init; }
-        public int WheelDelta { get; private init; }
-        public Keys KeyCode { get; private init; }
-        public int Priority => Kind == PlaybackActionKind.MouseMove ? 0 : 1;
-
-        public static PlaybackAction MouseMove(double timeMs, Point point) => new()
-        {
-            TimeMs = timeMs,
-            Kind = PlaybackActionKind.MouseMove,
-            Point = point
-        };
-
-        public static PlaybackAction MouseButton(double timeMs, Point point, RecordedMouseButton button, bool down) => new()
-        {
-            TimeMs = timeMs,
-            Kind = down ? PlaybackActionKind.MouseDown : PlaybackActionKind.MouseUp,
-            Point = point,
-            Button = button
-        };
-
-        public static PlaybackAction MouseWheel(double timeMs, Point point, int delta) => new()
-        {
-            TimeMs = timeMs,
-            Kind = PlaybackActionKind.MouseWheel,
-            Point = point,
-            WheelDelta = delta
-        };
-
-        public static PlaybackAction Key(double timeMs, Keys keyCode, bool down) => new()
-        {
-            TimeMs = timeMs,
-            Kind = down ? PlaybackActionKind.KeyDown : PlaybackActionKind.KeyUp,
-            KeyCode = keyCode
-        };
-
-    }
 }

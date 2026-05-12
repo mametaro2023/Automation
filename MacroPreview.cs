@@ -41,15 +41,12 @@ public sealed record PreviewInteractionSegment(
 
 public static class MacroPreviewBuilder
 {
-    private const int StationaryRadiusPx = 2;
-    private const long StationaryMinDurationMs = 10;
-    private const int StationaryMinSamples = 3;
-
     public static MacroPreview Build(
         Macro macro,
         NoiseSettings noise,
         int variantCount,
-        HumanMotionProfile? motionProfile = null)
+        HumanMotionProfile? motionProfile = null,
+        Screen? playbackScreen = null)
     {
         var preview = new MacroPreview();
         var events = macro.GetPlaybackEvents();
@@ -73,378 +70,68 @@ public static class MacroPreviewBuilder
         BuildInteractionSegments(preview, events);
 
         var baseSeed = Environment.TickCount ^ macro.Id.GetHashCode();
+        var playbackRate = MacroPlaybackPlanner.ResolvePlaybackRate(macro, playbackScreen);
+        var previewStart = GetPreviewStartPosition(events);
         for (var i = 0; i < count; i++)
         {
-            BuildNoisyVariant(preview, events, noise, motionProfile, new Random(baseSeed + i * 7919));
+            var plan = new MacroPlaybackPlanner(new Random(baseSeed + i * 7919)).Build(
+                macro,
+                noise,
+                macro.PlaybackSpeedPercent,
+                playbackRate.FrameIntervalMs,
+                motionProfile,
+                previewStart);
+            AddPlannedVariant(preview, plan);
         }
 
+        preview.DurationMs = Math.Max(
+            preview.DurationMs,
+            preview.NoisyTimedPaths
+                .SelectMany(path => path)
+                .Select(point => point.TimeMs)
+                .DefaultIfEmpty(0)
+                .Max());
         return preview;
     }
 
-    private static void BuildNoisyVariant(
-        MacroPreview preview,
-        List<MacroEvent> events,
-        NoiseSettings noise,
-        HumanMotionProfile? motionProfile,
-        Random random)
+    private static void AddPlannedVariant(MacroPreview preview, MacroPlaybackPlan plan)
     {
-        var noisyPath = new List<Point>();
-        var noisyTimedPath = new List<TimedPreviewPoint>();
-        var learnedSegments = new List<PreviewLearnedPathSegment>();
-        var noisyMarkers = new List<PreviewMarker>();
-        var anchor = Point.Empty;
-        var hasAnchor = false;
-        var recordedAnchor = Point.Empty;
-        var hasRecordedAnchor = false;
-        var segment = new List<MacroEvent>();
-        var pressedPositions = new Dictionary<RecordedMouseButton, Point>();
-        var movedWhilePressed = new HashSet<RecordedMouseButton>();
+        var timedPath = plan.Actions
+            .Where(HasDrawablePoint)
+            .Select(action => new TimedPreviewPoint((long)Math.Round(action.TimeMs), action.Point))
+            .ToList();
+        preview.NoisyTimedPaths.Add(timedPath);
+        preview.NoisyPaths.Add(timedPath.Select(item => item.Point).ToList());
+        preview.LearnedPathSegments.Add(plan.LearnedSegments
+            .Select(item => new PreviewLearnedPathSegment(item.Points))
+            .ToList());
+        preview.NoisyMarkers.Add(plan.Actions
+            .Where(action => action.Kind != PlaybackActionKind.MouseMove && HasDrawablePoint(action))
+            .Select(CreateMarker)
+            .ToList());
+    }
 
+    private static bool HasDrawablePoint(PlaybackAction action)
+    {
+        return action.Kind is PlaybackActionKind.MouseMove
+            or PlaybackActionKind.MouseDown
+            or PlaybackActionKind.MouseUp
+            or PlaybackActionKind.MouseWheel
+            || action.Point.X != 0
+            || action.Point.Y != 0;
+    }
+
+    private static Point GetPreviewStartPosition(IReadOnlyList<MacroEvent> events)
+    {
         foreach (var macroEvent in events)
         {
-            if (macroEvent.Kind == MacroEventKind.MouseMove)
-            {
-                segment.Add(macroEvent);
-                continue;
-            }
-
-            var flushResult = FlushMoveSegment(
-                noisyPath,
-                noisyTimedPath,
-                segment,
-                ref anchor,
-                ref hasAnchor,
-                ref recordedAnchor,
-                ref hasRecordedAnchor,
-                noise,
-                motionProfile,
-                pressedPositions.Count > 0,
-                learnedSegments,
-                random);
-            if (flushResult.HadMovement)
-            {
-                foreach (var button in pressedPositions.Keys)
-                {
-                    movedWhilePressed.Add(button);
-                }
-            }
-
-            segment.Clear();
-
             if (TryGetPoint(macroEvent, out var point))
             {
-                var noisyPoint = CreateNoisyEventPoint(macroEvent, point, anchor, hasAnchor && flushResult.TrailingStationary, pressedPositions, movedWhilePressed, noise, random);
-                noisyMarkers.Add(CreateMarker(noisyPoint, macroEvent));
-                noisyPath.Add(noisyPoint);
-                noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPoint));
-                anchor = noisyPoint;
-                hasAnchor = true;
-                recordedAnchor = point;
-                hasRecordedAnchor = true;
+                return point;
             }
         }
 
-        FlushMoveSegment(
-            noisyPath,
-            noisyTimedPath,
-            segment,
-            ref anchor,
-            ref hasAnchor,
-            ref recordedAnchor,
-            ref hasRecordedAnchor,
-            noise,
-            motionProfile,
-            pressedPositions.Count > 0,
-            learnedSegments,
-            random);
-        preview.NoisyPaths.Add(noisyPath);
-        preview.NoisyTimedPaths.Add(noisyTimedPath);
-        preview.LearnedPathSegments.Add(learnedSegments);
-        preview.NoisyMarkers.Add(noisyMarkers);
-    }
-
-    private static FlushMoveResult FlushMoveSegment(
-        List<Point> noisyPath,
-        List<TimedPreviewPoint> noisyTimedPath,
-        List<MacroEvent> segment,
-        ref Point anchor,
-        ref bool hasAnchor,
-        ref Point recordedAnchor,
-        ref bool hasRecordedAnchor,
-        NoiseSettings noise,
-        HumanMotionProfile? motionProfile,
-        bool isDragging,
-        List<PreviewLearnedPathSegment> learnedSegments,
-        Random random)
-    {
-        if (segment.Count == 0)
-        {
-            return new FlushMoveResult(true, false);
-        }
-
-        var moveSegments = SplitMoveSegment(segment, hasRecordedAnchor ? recordedAnchor : new Point(segment[0].X, segment[0].Y));
-        var trailingStationary = false;
-        var hadMovement = false;
-        foreach (var moveSegment in moveSegments)
-        {
-            if (moveSegment.IsStationary)
-            {
-                var holdPoint = hasAnchor ? anchor : new Point(moveSegment.Events[0].X, moveSegment.Events[0].Y);
-                foreach (var macroEvent in moveSegment.Events)
-                {
-                    noisyPath.Add(holdPoint);
-                    noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, holdPoint));
-                }
-
-                anchor = holdPoint;
-                hasAnchor = true;
-                recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
-                hasRecordedAnchor = true;
-                trailingStationary = true;
-                continue;
-            }
-
-            DrawMovingSegment(
-                noisyPath,
-                noisyTimedPath,
-                moveSegment.Events,
-                recordedAnchor,
-                ref anchor,
-                ref hasAnchor,
-                noise,
-                motionProfile,
-                isDragging,
-                learnedSegments,
-                random);
-            recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
-            hasRecordedAnchor = true;
-            trailingStationary = false;
-            hadMovement = true;
-        }
-
-        return new FlushMoveResult(trailingStationary, hadMovement);
-    }
-
-    private static void DrawMovingSegment(
-        List<Point> noisyPath,
-        List<TimedPreviewPoint> noisyTimedPath,
-        List<MacroEvent> segment,
-        Point recordedStartPosition,
-        ref Point anchor,
-        ref bool hasAnchor,
-        NoiseSettings noise,
-        HumanMotionProfile? motionProfile,
-        bool isDragging,
-        List<PreviewLearnedPathSegment> learnedSegments,
-        Random random)
-    {
-        var start = hasAnchor ? anchor : new Point(segment[0].X, segment[0].Y);
-        var playbackReference = BuildPlaybackReference(segment, recordedStartPosition, start);
-        var end = playbackReference[^1].Point;
-        if (HumanMotionPathGenerator.TryCreatePath(
-            motionProfile,
-            start,
-            end,
-            segment[0].TimeOffsetMs,
-            segment[^1].TimeOffsetMs,
-            8.0,
-            isDragging,
-            noise.LearnedTrajectoryTolerancePx,
-            playbackReference,
-            random,
-            out var learnedPath))
-        {
-            var learnedPoints = new List<Point> { start };
-            foreach (var point in learnedPath)
-            {
-                noisyPath.Add(point.Point);
-                noisyTimedPath.Add(new TimedPreviewPoint((long)Math.Round(point.TimeMs), point.Point));
-                learnedPoints.Add(point.Point);
-            }
-
-            if (learnedPoints.Count >= 2)
-            {
-                learnedSegments.Add(new PreviewLearnedPathSegment(learnedPoints));
-            }
-
-            anchor = end;
-            hasAnchor = true;
-            return;
-        }
-
-        var dx = end.X - start.X;
-        var dy = end.Y - start.Y;
-        var length = Math.Sqrt(dx * dx + dy * dy);
-        var normalX = length > 0 ? -dy / length : 0;
-        var normalY = length > 0 ? dx / length : 0;
-        var distanceScale = Math.Clamp(length / 350.0, 0.25, 1.65);
-        var amplitude = length < 24
-            ? 0.0
-            : Math.Min(60.0, noise.TrajectoryJitterPx * distanceScale);
-        var waveA = RandomSigned(random, amplitude * 0.55, amplitude);
-        var waveB = RandomSigned(random, amplitude * 0.18, amplitude * 0.45);
-
-        for (var i = 0; i < segment.Count; i++)
-        {
-            var t = segment.Count == 1 ? 1.0 : i / (double)(segment.Count - 1);
-            var macroEvent = segment[i];
-            var basePoint = playbackReference[Math.Min(i + 1, playbackReference.Count - 1)].Point;
-            var sideOffset = Math.Sin(Math.PI * t) * waveA + Math.Sin(Math.PI * 2.0 * t) * waveB;
-            noisyPath.Add(new Point(
-                (int)Math.Round(basePoint.X + normalX * sideOffset),
-                (int)Math.Round(basePoint.Y + normalY * sideOffset)));
-            noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPath[^1]));
-        }
-
-        if (noisyPath.Count > 0)
-        {
-            anchor = noisyPath[^1];
-            hasAnchor = true;
-        }
-    }
-
-    private static List<HumanMotionReferencePoint> BuildPlaybackReference(
-        IReadOnlyList<MacroEvent> segment,
-        Point recordedStartPosition,
-        Point playbackStartPosition)
-    {
-        var reference = new List<HumanMotionReferencePoint>(segment.Count + 1)
-        {
-            new(segment[0].TimeOffsetMs, playbackStartPosition)
-        };
-        reference.AddRange(segment.Select(item => new HumanMotionReferencePoint(
-            item.TimeOffsetMs,
-            TranslateRecordedPoint(new Point(item.X, item.Y), recordedStartPosition, playbackStartPosition))));
-        return reference;
-    }
-
-    private static Point TranslateRecordedPoint(Point recordedPoint, Point recordedAnchor, Point playbackAnchor)
-    {
-        return new Point(
-            playbackAnchor.X + recordedPoint.X - recordedAnchor.X,
-            playbackAnchor.Y + recordedPoint.Y - recordedAnchor.Y);
-    }
-
-    private static List<PreviewMoveSegment> SplitMoveSegment(IReadOnlyList<MacroEvent> segment, Point previousRecordedPosition)
-    {
-        var segments = new List<PreviewMoveSegment>();
-        var index = 0;
-        var anchor = previousRecordedPosition;
-        while (index < segment.Count)
-        {
-            if (TryFindStationarySpan(segment, index, anchor, out var stationaryEnd))
-            {
-                segments.Add(new PreviewMoveSegment(true, segment.Skip(index).Take(stationaryEnd - index + 1).ToList()));
-                anchor = new Point(segment[stationaryEnd].X, segment[stationaryEnd].Y);
-                index = stationaryEnd + 1;
-                continue;
-            }
-
-            var movingStart = index;
-            index++;
-            while (index < segment.Count
-                && !TryFindStationarySpan(
-                    segment,
-                    index,
-                    new Point(segment[index - 1].X, segment[index - 1].Y),
-                    out _))
-            {
-                index++;
-            }
-
-            segments.Add(new PreviewMoveSegment(false, segment.Skip(movingStart).Take(index - movingStart).ToList()));
-            anchor = new Point(segment[index - 1].X, segment[index - 1].Y);
-        }
-
-        return segments;
-    }
-
-    private static bool TryFindStationarySpan(
-        IReadOnlyList<MacroEvent> segment,
-        int startIndex,
-        Point anchor,
-        out int endIndex)
-    {
-        endIndex = startIndex - 1;
-        var startPoint = new Point(segment[startIndex].X, segment[startIndex].Y);
-        var stationaryAnchor = DistanceSquared(startPoint, anchor) <= StationaryRadiusPx * StationaryRadiusPx
-            ? anchor
-            : startPoint;
-
-        for (var i = startIndex; i < segment.Count; i++)
-        {
-            var point = new Point(segment[i].X, segment[i].Y);
-            if (DistanceSquared(point, stationaryAnchor) > StationaryRadiusPx * StationaryRadiusPx)
-            {
-                break;
-            }
-
-            endIndex = i;
-        }
-
-        var count = endIndex - startIndex + 1;
-        if (count <= 0)
-        {
-            return false;
-        }
-
-        var durationMs = segment[endIndex].TimeOffsetMs - segment[startIndex].TimeOffsetMs;
-        return count >= StationaryMinSamples || durationMs >= StationaryMinDurationMs;
-    }
-
-    private static int DistanceSquared(Point a, Point b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return dx * dx + dy * dy;
-    }
-
-    private static double RandomSigned(Random random, double minMagnitude, double maxMagnitude)
-    {
-        if (maxMagnitude <= 0)
-        {
-            return 0;
-        }
-
-        var sign = random.Next(0, 2) == 0 ? -1.0 : 1.0;
-        return sign * (minMagnitude + random.NextDouble() * Math.Max(0.0, maxMagnitude - minMagnitude));
-    }
-
-    private static Point CreateNoisyEventPoint(
-        MacroEvent macroEvent,
-        Point recordedPoint,
-        Point stationaryAnchor,
-        bool useStationaryAnchor,
-        Dictionary<RecordedMouseButton, Point> pressedPositions,
-        HashSet<RecordedMouseButton> movedWhilePressed,
-        NoiseSettings noise,
-        Random random)
-    {
-        if (macroEvent.Kind == MacroEventKind.MouseDown)
-        {
-            var point = useStationaryAnchor ? stationaryAnchor : CreateNoisyAnchor(recordedPoint, macroEvent, noise, random);
-            pressedPositions[macroEvent.Button] = point;
-            movedWhilePressed.Remove(macroEvent.Button);
-            return point;
-        }
-
-        if (macroEvent.Kind == MacroEventKind.MouseUp)
-        {
-            if (pressedPositions.TryGetValue(macroEvent.Button, out var downPoint)
-                && !movedWhilePressed.Contains(macroEvent.Button))
-            {
-                pressedPositions.Remove(macroEvent.Button);
-                movedWhilePressed.Remove(macroEvent.Button);
-                return downPoint;
-            }
-
-            var point = useStationaryAnchor ? stationaryAnchor : CreateNoisyAnchor(recordedPoint, macroEvent, noise, random);
-            pressedPositions.Remove(macroEvent.Button);
-            movedWhilePressed.Remove(macroEvent.Button);
-            return point;
-        }
-
-        return CreateNoisyAnchor(recordedPoint, macroEvent, noise, random);
+        return Cursor.Position;
     }
 
     private static bool TryGetPoint(MacroEvent macroEvent, out Point point)
@@ -464,22 +151,6 @@ public static class MacroPreviewBuilder
         return false;
     }
 
-    private static Point CreateNoisyAnchor(Point point, MacroEvent macroEvent, NoiseSettings noise, Random random)
-    {
-        var maxJitter = macroEvent.Kind is MacroEventKind.MouseDown or MacroEventKind.MouseUp
-            ? Math.Min(noise.CoordinateJitterPx, 2)
-            : 0;
-
-        if (maxJitter <= 0)
-        {
-            return point;
-        }
-
-        return new Point(
-            point.X + random.Next(-maxJitter, maxJitter + 1),
-            point.Y + random.Next(-maxJitter, maxJitter + 1));
-    }
-
     private static PreviewMarker CreateMarker(Point point, MacroEvent macroEvent)
     {
         return new PreviewMarker
@@ -488,6 +159,30 @@ public static class MacroPreviewBuilder
             TimeMs = macroEvent.TimeOffsetMs,
             Kind = macroEvent.Kind,
             Text = GetEventText(macroEvent)
+        };
+    }
+
+    private static PreviewMarker CreateMarker(PlaybackAction action)
+    {
+        return new PreviewMarker
+        {
+            Location = action.Point,
+            TimeMs = (long)Math.Round(action.TimeMs),
+            Kind = GetMacroEventKind(action.Kind),
+            Text = GetEventText(action)
+        };
+    }
+
+    private static MacroEventKind GetMacroEventKind(PlaybackActionKind kind)
+    {
+        return kind switch
+        {
+            PlaybackActionKind.MouseDown => MacroEventKind.MouseDown,
+            PlaybackActionKind.MouseUp => MacroEventKind.MouseUp,
+            PlaybackActionKind.MouseWheel => MacroEventKind.MouseWheel,
+            PlaybackActionKind.KeyDown => MacroEventKind.KeyDown,
+            PlaybackActionKind.KeyUp => MacroEventKind.KeyUp,
+            _ => MacroEventKind.MouseMove
         };
     }
 
@@ -551,6 +246,19 @@ public static class MacroPreviewBuilder
         };
     }
 
+    private static string GetEventText(PlaybackAction action)
+    {
+        return action.Kind switch
+        {
+            PlaybackActionKind.MouseDown => $"{GetMouseButtonText(action.Button)} ↓",
+            PlaybackActionKind.MouseUp => $"{GetMouseButtonText(action.Button)} ↑",
+            PlaybackActionKind.KeyDown => $"{GetKeyText(action.KeyCode)} ↓",
+            PlaybackActionKind.KeyUp => $"{GetKeyText(action.KeyCode)} ↑",
+            PlaybackActionKind.MouseWheel => action.WheelDelta >= 0 ? "Wheel +" : "Wheel -",
+            _ => ""
+        };
+    }
+
     private static string GetMouseButtonText(RecordedMouseButton button)
     {
         return button switch
@@ -584,8 +292,6 @@ public static class MacroPreviewBuilder
         };
     }
 
-    private sealed record PreviewMoveSegment(bool IsStationary, List<MacroEvent> Events);
-    private sealed record FlushMoveResult(bool TrailingStationary, bool HadMovement);
 }
 
 public sealed class PreviewOverlayForm : Form
@@ -622,7 +328,7 @@ public sealed class PreviewOverlayForm : Form
         Screen transportScreen,
         HumanMotionProfile? motionProfile = null)
     {
-        _preview = MacroPreviewBuilder.Build(macro, noise, variantCount, motionProfile);
+        _preview = MacroPreviewBuilder.Build(macro, noise, variantCount, motionProfile, transportScreen);
         _virtualBounds = GetVirtualBounds();
         _transportBounds = transportScreen.WorkingArea;
 
@@ -722,7 +428,7 @@ public sealed class PreviewOverlayForm : Form
         {
             foreach (var segment in learnedVariant)
             {
-                DrawPath(e.Graphics, segment.Points, Color.Magenta, 2, 150);
+                DrawPath(e.Graphics, segment.Points, Color.Magenta, 1, 48);
             }
         }
 
