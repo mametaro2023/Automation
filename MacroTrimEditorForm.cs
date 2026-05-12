@@ -1128,22 +1128,15 @@ public sealed class MacroTrimEditorForm : Form
 
     private Point? GetPointAtTime(long timeMs, params MacroEvent[] excludedEvents)
     {
-        var excluded = excludedEvents.Length == 0
-            ? null
-            : new HashSet<MacroEvent>(excludedEvents);
-        var points = _events
-            .Where(IsDrawablePoint)
-            .Where(item => excluded is null || !excluded.Contains(item))
-            .OrderBy(item => item.TimeOffsetMs)
-            .ToList();
-        if (points.Count == 0)
+        MacroEvent? previous = null;
+        foreach (var current in _events)
         {
-            return null;
-        }
+            if (!IsDrawablePoint(current) || IsExcludedEvent(current, excludedEvents))
+            {
+                continue;
+            }
 
-        var previous = points[0];
-        foreach (var current in points)
-        {
+            previous ??= current;
             if (current.TimeOffsetMs >= timeMs)
             {
                 if (current.TimeOffsetMs == previous.TimeOffsetMs)
@@ -1160,7 +1153,20 @@ public sealed class MacroTrimEditorForm : Form
             previous = current;
         }
 
-        return new Point(points[^1].X, points[^1].Y);
+        return previous is null ? null : new Point(previous.X, previous.Y);
+    }
+
+    private static bool IsExcludedEvent(MacroEvent macroEvent, MacroEvent[] excludedEvents)
+    {
+        foreach (var excluded in excludedEvents)
+        {
+            if (ReferenceEquals(macroEvent, excluded))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void ApplyWaitBefore()
@@ -2288,6 +2294,7 @@ public sealed class MacroTrimEditorForm : Form
         private const int DragStartThresholdPixels = 4;
 
         private readonly List<TimelineHit> _hits = new();
+        private readonly System.Windows.Forms.Timer _dragFrameTimer = new();
         private TimelineDrag? _drag;
         private TimelineLayout? _layout;
         private List<MacroEvent> _events = new();
@@ -2306,12 +2313,16 @@ public sealed class MacroTrimEditorForm : Form
         private Point _lastPanPoint;
         private Point _viewportOffset;
         private Size _viewportSize;
+        private int _pendingDragX;
+        private bool _hasPendingDragFrame;
 
         public MacroTimelineControl()
         {
             BackColor = Color.FromArgb(18, 20, 24);
             Cursor = Cursors.Hand;
             TabStop = true;
+            _dragFrameTimer.Interval = GetRefreshIntervalMs(this);
+            _dragFrameTimer.Tick += (_, _) => ProcessPendingDragFrame();
         }
 
         public event Action<int>? EventSelected;
@@ -2444,6 +2455,7 @@ public sealed class MacroTrimEditorForm : Form
                         _events[hit.StartIndex].TimeOffsetMs,
                         _events[hit.EndIndex].TimeOffsetMs);
                     _drag.StartMousePoint = e.Location;
+                    _dragFrameTimer.Interval = GetRefreshIntervalMs(this);
                     Capture = true;
                 }
             }
@@ -2486,8 +2498,30 @@ public sealed class MacroTrimEditorForm : Form
                 _drag.HasMoved = true;
             }
 
+            QueueDragFrame(e.X);
+        }
+
+        private void QueueDragFrame(int mouseX)
+        {
+            _pendingDragX = mouseX;
+            _hasPendingDragFrame = true;
+            if (!_dragFrameTimer.Enabled)
+            {
+                _dragFrameTimer.Start();
+            }
+        }
+
+        private void ProcessPendingDragFrame()
+        {
+            if (!_hasPendingDragFrame || _drag is null)
+            {
+                _dragFrameTimer.Stop();
+                return;
+            }
+
+            _hasPendingDragFrame = false;
             var plot = GetPlotBounds();
-            var time = XToTime(e.X, plot);
+            var time = XToTime(_pendingDragX, plot);
             var delta = time - _drag.StartMouseTimeMs;
             var startMs = _drag.StartMs;
             var endMs = _drag.EndMs;
@@ -2511,6 +2545,11 @@ public sealed class MacroTrimEditorForm : Form
                 return;
             }
 
+            if (_drag.PreviewStartMs == preview.StartMs && _drag.PreviewEndMs == preview.EndMs)
+            {
+                return;
+            }
+
             _drag.PreviewStartMs = preview.StartMs;
             _drag.PreviewEndMs = preview.EndMs;
             Invalidate();
@@ -2528,6 +2567,14 @@ public sealed class MacroTrimEditorForm : Form
             }
 
             var drag = _drag;
+            if (drag is not null && drag.HasMoved)
+            {
+                ProcessPendingDragFrame();
+                drag = _drag;
+            }
+
+            _dragFrameTimer.Stop();
+            _hasPendingDragFrame = false;
             _drag = null;
             Capture = false;
             if (drag is not null)
@@ -2606,6 +2653,7 @@ public sealed class MacroTrimEditorForm : Form
             if (disposing)
             {
                 _baseBitmap?.Dispose();
+                _dragFrameTimer.Dispose();
             }
 
             base.Dispose(disposing);
@@ -3291,7 +3339,13 @@ public sealed class MacroTrimEditorForm : Form
             Point? startPoint,
             Point? endPoint)
         {
-            _eventTimePreview = new EventTimeCanvasPreview(startIndex, endIndex, startMs, endMs, startPoint, endPoint);
+            var preview = new EventTimeCanvasPreview(startIndex, endIndex, startMs, endMs, startPoint, endPoint);
+            if (Equals(_eventTimePreview, preview))
+            {
+                return;
+            }
+
+            _eventTimePreview = preview;
             Invalidate();
         }
 
@@ -3435,9 +3489,11 @@ public sealed class MacroTrimEditorForm : Form
                 points.Add(mapper(preview.StartPoint.Value));
             }
 
-            points.AddRange(_timedCanvasPoints
-                .Where(point => point.TimeMs > startMs && point.TimeMs < endMs)
-                .Select(point => point.Point));
+            var startIndex = FindFirstTimedPointAfter(startMs);
+            for (var i = startIndex; i < _timedCanvasPoints.Count && _timedCanvasPoints[i].TimeMs < endMs; i++)
+            {
+                points.Add(_timedCanvasPoints[i].Point);
+            }
 
             if (preview.EndPoint is not null && preview.EndMs != preview.StartMs)
             {
@@ -3486,6 +3542,7 @@ public sealed class MacroTrimEditorForm : Form
             _drawableEvents = _events
                 .Select((macroEvent, index) => new TimedEvent(index, macroEvent))
                 .Where(item => IsDrawablePoint(item.Event))
+                .OrderBy(item => item.Event.TimeOffsetMs)
                 .ToList();
             _markerEvents = _events
                 .Select((macroEvent, index) => new TimedEvent(index, macroEvent))
@@ -3724,27 +3781,70 @@ public sealed class MacroTrimEditorForm : Form
                 return null;
             }
 
-            var previous = _drawableEvents[0].Event;
-            foreach (var item in _drawableEvents)
+            var index = FindFirstDrawableEventAtOrAfter(timeMs);
+            if (index <= 0)
             {
-                var current = item.Event;
-                if (current.TimeOffsetMs >= timeMs)
-                {
-                    if (current.TimeOffsetMs == previous.TimeOffsetMs)
-                    {
-                        return new Point(current.X, current.Y);
-                    }
-
-                    var t = Math.Clamp((timeMs - previous.TimeOffsetMs) / (double)(current.TimeOffsetMs - previous.TimeOffsetMs), 0.0, 1.0);
-                    return new Point(
-                        (int)Math.Round(previous.X + (current.X - previous.X) * t),
-                        (int)Math.Round(previous.Y + (current.Y - previous.Y) * t));
-                }
-
-                previous = current;
+                var first = _drawableEvents[0].Event;
+                return new Point(first.X, first.Y);
             }
 
-            return new Point(previous.X, previous.Y);
+            if (index >= _drawableEvents.Count)
+            {
+                var last = _drawableEvents[^1].Event;
+                return new Point(last.X, last.Y);
+            }
+
+            var previous = _drawableEvents[index - 1].Event;
+            var current = _drawableEvents[index].Event;
+            if (current.TimeOffsetMs == previous.TimeOffsetMs)
+            {
+                return new Point(current.X, current.Y);
+            }
+
+            var t = Math.Clamp((timeMs - previous.TimeOffsetMs) / (double)(current.TimeOffsetMs - previous.TimeOffsetMs), 0.0, 1.0);
+            return new Point(
+                (int)Math.Round(previous.X + (current.X - previous.X) * t),
+                (int)Math.Round(previous.Y + (current.Y - previous.Y) * t));
+        }
+
+        private int FindFirstTimedPointAfter(long timeMs)
+        {
+            var low = 0;
+            var high = _timedCanvasPoints.Count;
+            while (low < high)
+            {
+                var mid = low + ((high - low) / 2);
+                if (_timedCanvasPoints[mid].TimeMs <= timeMs)
+                {
+                    low = mid + 1;
+                }
+                else
+                {
+                    high = mid;
+                }
+            }
+
+            return low;
+        }
+
+        private int FindFirstDrawableEventAtOrAfter(long timeMs)
+        {
+            var low = 0;
+            var high = _drawableEvents.Count;
+            while (low < high)
+            {
+                var mid = low + ((high - low) / 2);
+                if (_drawableEvents[mid].Event.TimeOffsetMs < timeMs)
+                {
+                    low = mid + 1;
+                }
+                else
+                {
+                    high = mid;
+                }
+            }
+
+            return low;
         }
 
         private void DrawEmpty(Graphics graphics)
