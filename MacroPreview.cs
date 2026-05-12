@@ -13,6 +13,7 @@ public sealed class MacroPreview
     public List<TimedPreviewPoint> PerfectTimedPath { get; } = new();
     public List<List<Point>> NoisyPaths { get; } = new();
     public List<List<TimedPreviewPoint>> NoisyTimedPaths { get; } = new();
+    public List<List<PreviewLearnedPathSegment>> LearnedPathSegments { get; } = new();
     public List<PreviewMarker> PerfectMarkers { get; } = new();
     public List<List<PreviewMarker>> NoisyMarkers { get; } = new();
     public List<PreviewInteractionSegment> InteractionSegments { get; } = new();
@@ -28,6 +29,8 @@ public sealed class PreviewMarker
 }
 
 public sealed record TimedPreviewPoint(long TimeMs, Point Point);
+
+public sealed record PreviewLearnedPathSegment(List<Point> Points);
 
 public sealed record PreviewInteractionSegment(
     long StartMs,
@@ -87,6 +90,7 @@ public static class MacroPreviewBuilder
     {
         var noisyPath = new List<Point>();
         var noisyTimedPath = new List<TimedPreviewPoint>();
+        var learnedSegments = new List<PreviewLearnedPathSegment>();
         var noisyMarkers = new List<PreviewMarker>();
         var anchor = Point.Empty;
         var hasAnchor = false;
@@ -115,6 +119,7 @@ public static class MacroPreviewBuilder
                 noise,
                 motionProfile,
                 pressedPositions.Count > 0,
+                learnedSegments,
                 random);
             if (flushResult.HadMovement)
             {
@@ -150,9 +155,11 @@ public static class MacroPreviewBuilder
             noise,
             motionProfile,
             pressedPositions.Count > 0,
+            learnedSegments,
             random);
         preview.NoisyPaths.Add(noisyPath);
         preview.NoisyTimedPaths.Add(noisyTimedPath);
+        preview.LearnedPathSegments.Add(learnedSegments);
         preview.NoisyMarkers.Add(noisyMarkers);
     }
 
@@ -167,6 +174,7 @@ public static class MacroPreviewBuilder
         NoiseSettings noise,
         HumanMotionProfile? motionProfile,
         bool isDragging,
+        List<PreviewLearnedPathSegment> learnedSegments,
         Random random)
     {
         if (segment.Count == 0)
@@ -196,7 +204,7 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            DrawMovingSegment(noisyPath, noisyTimedPath, moveSegment.Events, ref anchor, ref hasAnchor, noise, motionProfile, isDragging, random);
+            DrawMovingSegment(noisyPath, noisyTimedPath, moveSegment.Events, ref anchor, ref hasAnchor, noise, motionProfile, isDragging, learnedSegments, random);
             recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
             hasRecordedAnchor = true;
             trailingStationary = false;
@@ -215,6 +223,7 @@ public static class MacroPreviewBuilder
         NoiseSettings noise,
         HumanMotionProfile? motionProfile,
         bool isDragging,
+        List<PreviewLearnedPathSegment> learnedSegments,
         Random random)
     {
         var start = hasAnchor ? anchor : new Point(segment[0].X, segment[0].Y);
@@ -230,10 +239,17 @@ public static class MacroPreviewBuilder
             random,
             out var learnedPath))
         {
+            var learnedPoints = new List<Point> { start };
             foreach (var point in learnedPath)
             {
                 noisyPath.Add(point.Point);
                 noisyTimedPath.Add(new TimedPreviewPoint((long)Math.Round(point.TimeMs), point.Point));
+                learnedPoints.Add(point.Point);
+            }
+
+            if (learnedPoints.Count >= 2)
+            {
+                learnedSegments.Add(new PreviewLearnedPathSegment(learnedPoints));
             }
 
             anchor = end;
@@ -664,6 +680,14 @@ public sealed class PreviewOverlayForm : Form
             DrawPath(e.Graphics, noisyPath, Color.Gold, 1, 40);
         }
 
+        foreach (var learnedVariant in _preview.LearnedPathSegments)
+        {
+            foreach (var segment in learnedVariant)
+            {
+                DrawPath(e.Graphics, segment.Points, Color.Magenta, 2, 150);
+            }
+        }
+
         var progressPath = GetProgressPath(_preview.PerfectTimedPath, _currentMs);
         DrawPath(e.Graphics, progressPath, Color.Red, 5, 245);
         DrawActiveInteractionSegment(e.Graphics);
@@ -1088,7 +1112,7 @@ public sealed class PreviewOverlayForm : Form
         var lines = new[]
         {
             $"{(_isPlaying ? "再生中" : "停止中")}  {_currentMs:N0} / {_preview.DurationMs:N0} ms",
-            "Space 再生/停止  ←/→ 1秒  Ctrl=100ms  Shift=5秒  Wheel=200ms",
+            "赤: 完全再現  黄: 通常ノイズ  マゼンタ: 学習サンプル",
             "Home または 1 = 先頭   End または 0 = 最後   Esc = 終了"
         };
         var width = 610;
