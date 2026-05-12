@@ -204,7 +204,18 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            DrawMovingSegment(noisyPath, noisyTimedPath, moveSegment.Events, ref anchor, ref hasAnchor, noise, motionProfile, isDragging, learnedSegments, random);
+            DrawMovingSegment(
+                noisyPath,
+                noisyTimedPath,
+                moveSegment.Events,
+                recordedAnchor,
+                ref anchor,
+                ref hasAnchor,
+                noise,
+                motionProfile,
+                isDragging,
+                learnedSegments,
+                random);
             recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
             hasRecordedAnchor = true;
             trailingStationary = false;
@@ -218,6 +229,7 @@ public static class MacroPreviewBuilder
         List<Point> noisyPath,
         List<TimedPreviewPoint> noisyTimedPath,
         List<MacroEvent> segment,
+        Point recordedStartPosition,
         ref Point anchor,
         ref bool hasAnchor,
         NoiseSettings noise,
@@ -227,7 +239,8 @@ public static class MacroPreviewBuilder
         Random random)
     {
         var start = hasAnchor ? anchor : new Point(segment[0].X, segment[0].Y);
-        var end = new Point(segment[^1].X, segment[^1].Y);
+        var playbackReference = BuildPlaybackReference(segment, recordedStartPosition, start);
+        var end = playbackReference[^1].Point;
         if (HumanMotionPathGenerator.TryCreatePath(
             motionProfile,
             start,
@@ -237,7 +250,7 @@ public static class MacroPreviewBuilder
             8.0,
             isDragging,
             noise.LearnedTrajectoryTolerancePx,
-            segment.Select(item => new HumanMotionReferencePoint(item.TimeOffsetMs, new Point(item.X, item.Y))).ToList(),
+            playbackReference,
             random,
             out var learnedPath))
         {
@@ -275,10 +288,11 @@ public static class MacroPreviewBuilder
         {
             var t = segment.Count == 1 ? 1.0 : i / (double)(segment.Count - 1);
             var macroEvent = segment[i];
+            var basePoint = playbackReference[Math.Min(i + 1, playbackReference.Count - 1)].Point;
             var sideOffset = Math.Sin(Math.PI * t) * waveA + Math.Sin(Math.PI * 2.0 * t) * waveB;
             noisyPath.Add(new Point(
-                (int)Math.Round(macroEvent.X + normalX * sideOffset),
-                (int)Math.Round(macroEvent.Y + normalY * sideOffset)));
+                (int)Math.Round(basePoint.X + normalX * sideOffset),
+                (int)Math.Round(basePoint.Y + normalY * sideOffset)));
             noisyTimedPath.Add(new TimedPreviewPoint(macroEvent.TimeOffsetMs, noisyPath[^1]));
         }
 
@@ -287,6 +301,28 @@ public static class MacroPreviewBuilder
             anchor = noisyPath[^1];
             hasAnchor = true;
         }
+    }
+
+    private static List<HumanMotionReferencePoint> BuildPlaybackReference(
+        IReadOnlyList<MacroEvent> segment,
+        Point recordedStartPosition,
+        Point playbackStartPosition)
+    {
+        var reference = new List<HumanMotionReferencePoint>(segment.Count + 1)
+        {
+            new(segment[0].TimeOffsetMs, playbackStartPosition)
+        };
+        reference.AddRange(segment.Select(item => new HumanMotionReferencePoint(
+            item.TimeOffsetMs,
+            TranslateRecordedPoint(new Point(item.X, item.Y), recordedStartPosition, playbackStartPosition))));
+        return reference;
+    }
+
+    private static Point TranslateRecordedPoint(Point recordedPoint, Point recordedAnchor, Point playbackAnchor)
+    {
+        return new Point(
+            playbackAnchor.X + recordedPoint.X - recordedAnchor.X,
+            playbackAnchor.Y + recordedPoint.Y - recordedAnchor.Y);
     }
 
     private static List<PreviewMoveSegment> SplitMoveSegment(IReadOnlyList<MacroEvent> segment, Point previousRecordedPosition)
