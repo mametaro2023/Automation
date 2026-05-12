@@ -29,6 +29,22 @@ public enum RecordingTimingMode
     FixedEventInterval
 }
 
+public enum LoopPlaybackMode
+{
+    None,
+    Count,
+    ToggleHotkey,
+    HoldHotkey
+}
+
+public sealed class PlaybackLoopOptions
+{
+    public LoopPlaybackMode Mode { get; set; } = LoopPlaybackMode.None;
+    public int Count { get; set; } = 1;
+    public int IntervalMs { get; set; }
+    public int IntervalJitterPercent { get; set; }
+}
+
 public sealed class MacroEvent
 {
     public MacroEventKind Kind { get; set; }
@@ -46,6 +62,10 @@ public sealed class Macro
     public string Name { get; set; } = "New Macro";
     public bool IsEnabled { get; set; } = true;
     public int PlaybackSpeedPercent { get; set; } = 100;
+    public LoopPlaybackMode LoopMode { get; set; } = LoopPlaybackMode.None;
+    public int LoopCount { get; set; } = 2;
+    public int LoopIntervalMs { get; set; }
+    public int LoopIntervalJitterPercent { get; set; }
     public long TrimStartMs { get; set; }
     public long? TrimEndMs { get; set; }
     public string? ScreenshotPath { get; set; }

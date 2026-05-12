@@ -23,6 +23,7 @@ partial class Form1
             _motionLearningRecorder.Dispose();
             _player.Dispose();
             _hotkeys.Dispose();
+            _holdMonitor.Dispose();
         }
         base.Dispose(disposing);
     }

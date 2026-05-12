@@ -17,6 +17,8 @@ public sealed class MacroPlayer : IDisposable
     private bool _timerResolutionRaised;
 
     public bool IsPlaying { get; private set; }
+    public Guid? CurrentMacroId { get; private set; }
+    public LoopPlaybackMode CurrentLoopMode { get; private set; } = LoopPlaybackMode.None;
 
     public async Task PlayAsync(
         Macro macro,
@@ -24,30 +26,45 @@ public sealed class MacroPlayer : IDisposable
         int speedPercent,
         HumanMotionProfile? motionProfile = null,
         Screen? playbackScreen = null,
-        Action<string>? status = null)
+        Action<string>? status = null,
+        PlaybackLoopOptions? loopOptions = null)
     {
         if (IsPlaying || macro.GetPlaybackEvents().Count == 0)
         {
             return;
         }
 
+        loopOptions ??= new PlaybackLoopOptions();
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         IsPlaying = true;
+        CurrentMacroId = macro.Id;
+        CurrentLoopMode = loopOptions.Mode;
         var playbackRate = MacroPlaybackPlanner.ResolvePlaybackRate(macro, playbackScreen);
-        status?.Invoke($"再生中: {macro.Name} / 最大{playbackRate.Hertz}Hz");
 
         try
         {
             RaiseTimerResolution();
-            var plan = new MacroPlaybackPlanner(_random).Build(
-                macro,
-                noise,
-                speedPercent,
-                playbackRate.FrameIntervalMs,
-                motionProfile,
-                Cursor.Position);
-            await Task.Run(() => RunTimeline(plan.Actions, token), token);
+            var loopLimit = GetLoopLimit(loopOptions);
+            for (var loopIndex = 1; loopIndex <= loopLimit || loopLimit == int.MaxValue; loopIndex++)
+            {
+                status?.Invoke(CreatePlaybackStatus(macro, playbackRate, loopOptions, loopIndex, loopLimit));
+                var plan = new MacroPlaybackPlanner(_random).Build(
+                    macro,
+                    noise,
+                    speedPercent,
+                    playbackRate.FrameIntervalMs,
+                    motionProfile,
+                    Cursor.Position);
+                await Task.Run(() => RunTimeline(plan.Actions, token), token);
+
+                if (loopIndex >= loopLimit && loopLimit != int.MaxValue)
+                {
+                    break;
+                }
+
+                await DelayLoopIntervalAsync(loopOptions, token);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -56,6 +73,8 @@ public sealed class MacroPlayer : IDisposable
         finally
         {
             IsPlaying = false;
+            CurrentMacroId = null;
+            CurrentLoopMode = LoopPlaybackMode.None;
             _cts.Dispose();
             _cts = null;
             RestoreTimerResolution();
@@ -66,6 +85,60 @@ public sealed class MacroPlayer : IDisposable
     public void Stop()
     {
         _cts?.Cancel();
+    }
+
+    private static int GetLoopLimit(PlaybackLoopOptions loopOptions)
+    {
+        return loopOptions.Mode switch
+        {
+            LoopPlaybackMode.Count => Math.Max(1, loopOptions.Count),
+            LoopPlaybackMode.ToggleHotkey or LoopPlaybackMode.HoldHotkey => int.MaxValue,
+            _ => 1
+        };
+    }
+
+    private static string CreatePlaybackStatus(
+        Macro macro,
+        PlaybackRate playbackRate,
+        PlaybackLoopOptions loopOptions,
+        int loopIndex,
+        int loopLimit)
+    {
+        var rateText = $"最大{playbackRate.Hertz}Hz";
+        return loopOptions.Mode switch
+        {
+            LoopPlaybackMode.Count => $"ループ再生中: {macro.Name} / {loopIndex}/{loopLimit} / {rateText}",
+            LoopPlaybackMode.ToggleHotkey => $"ループ再生中: {macro.Name} / ショートカットで停止 / {rateText}",
+            LoopPlaybackMode.HoldHotkey => $"ループ再生中: {macro.Name} / キーを離すと停止 / {rateText}",
+            _ => $"再生中: {macro.Name} / {rateText}"
+        };
+    }
+
+    private async Task DelayLoopIntervalAsync(PlaybackLoopOptions loopOptions, CancellationToken token)
+    {
+        if (loopOptions.Mode == LoopPlaybackMode.None)
+        {
+            return;
+        }
+
+        var intervalMs = Math.Max(0, loopOptions.IntervalMs);
+        var jitterPercent = Math.Clamp(loopOptions.IntervalJitterPercent, 0, 100);
+        if (intervalMs <= 0 && jitterPercent <= 0)
+        {
+            return;
+        }
+
+        var jitterMs = intervalMs * jitterPercent / 100.0;
+        var actualIntervalMs = intervalMs;
+        if (jitterMs > 0)
+        {
+            actualIntervalMs = Math.Max(0, (int)Math.Round(intervalMs + (_random.NextDouble() * 2.0 - 1.0) * jitterMs));
+        }
+
+        if (actualIntervalMs > 0)
+        {
+            await Task.Delay(actualIntervalMs, token);
+        }
     }
 
     private List<PlaybackAction> BuildTimeline(

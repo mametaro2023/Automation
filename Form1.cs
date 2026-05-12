@@ -27,6 +27,7 @@ public partial class Form1 : Form
     private readonly InputRecorder _motionLearningRecorder = new();
     private readonly MacroPlayer _player = new();
     private readonly HotkeyManager _hotkeys = new();
+    private readonly HotkeyHoldMonitor _holdMonitor = new();
     private readonly List<Macro> _macros = new();
     private readonly EmergencyStopOverlay _emergencyOverlay = new();
     private readonly CountdownSoundPlayer _countdownSound = new();
@@ -75,6 +76,10 @@ public partial class Form1 : Form
     private NumericUpDown _learnedToleranceBox = null!;
     private NumericUpDown _previewPathCountBox = null!;
     private NumericUpDown _playbackSpeedBox = null!;
+    private ComboBox _loopModeBox = null!;
+    private NumericUpDown _loopCountBox = null!;
+    private NumericUpDown _loopIntervalBox = null!;
+    private NumericUpDown _loopIntervalJitterBox = null!;
     private CheckBox _captureScreenshotBox = null!;
     private CheckBox _showScreenshotBox = null!;
     private ToolStripStatusLabel _statusLabel = null!;
@@ -94,6 +99,7 @@ public partial class Form1 : Form
     private bool _restoreWindowAfterRecording;
     private bool _updatingSelection;
     private bool _updatingMacroListColumns;
+    private bool _holdHotkeyReleased;
     private PendingScreenshot? _pendingScreenshot;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -140,6 +146,7 @@ public partial class Form1 : Form
             _motionLearningRecorder.Stop();
         }
 
+        _holdMonitor.Stop();
         base.OnFormClosed(e);
     }
 
@@ -186,7 +193,7 @@ public partial class Form1 : Form
                 var macro = _macros.FirstOrDefault(item => item.Id == macroId);
                 if (macro is not null)
                 {
-                    _ = PlayMacroAsync(macro);
+                    HandleMacroHotkey(macro);
                 }
 
                 return;
@@ -370,7 +377,7 @@ public partial class Form1 : Form
         rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         _advancedSettingsRow = new RowStyle(SizeType.Absolute, 0);
         rightPanel.RowStyles.Add(_advancedSettingsRow);
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 160));
         _mainSplit.Panel2.Controls.Add(rightPanel);
 
         var macroGroup = CreateGroup("マクロ");
@@ -547,6 +554,38 @@ public partial class Form1 : Form
             Maximum = 10,
             Value = 3
         }, 216, 118);
+        _loopModeBox = new ScrollFriendlyComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _loopModeBox.Items.AddRange(new object[] { "通常再生", "指定回数ループ", "ショートカット切替ループ", "押下中ループ" });
+        _loopModeBox.SelectedIndex = 0;
+        _loopModeBox.SelectedIndexChanged += LoopSettingOnChanged;
+        AddLabeledControl(detailGroup, "ループ方式", _loopModeBox, 244, 118);
+        AddLabeledControl(detailGroup, "ループ回数", _loopCountBox = new ScrollFriendlyNumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 100000,
+            Value = 2,
+            ThousandsSeparator = true
+        }, 272, 118);
+        _loopCountBox.ValueChanged += LoopSettingOnChanged;
+        AddLabeledControl(detailGroup, "ループ間隔(ms)", _loopIntervalBox = new ScrollFriendlyNumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 600000,
+            Increment = 10,
+            Value = 0,
+            ThousandsSeparator = true
+        }, 300, 118);
+        _loopIntervalBox.ValueChanged += LoopSettingOnChanged;
+        AddLabeledControl(detailGroup, "間隔揺れ(%)", _loopIntervalJitterBox = new ScrollFriendlyNumericUpDown
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0
+        }, 328, 118);
+        _loopIntervalJitterBox.ValueChanged += LoopSettingOnChanged;
         WireNoiseSettingChanges();
 
         _summaryLabel = new Label
@@ -1028,7 +1067,7 @@ public partial class Form1 : Form
         }
 
         _advancedSettingsPanel.Visible = visible;
-        _advancedSettingsRow.Height = visible ? 288 : 0;
+        _advancedSettingsRow.Height = visible ? 410 : 0;
         _advancedSettingsPanel.Parent?.PerformLayout();
     }
 
@@ -1055,6 +1094,10 @@ public partial class Form1 : Form
         _toolTip.SetToolTip(_accelNoiseBox, "マウス移動中の加速・減速の偏りです。人間らしい速度変化を作ります。");
         _toolTip.SetToolTip(_learnedToleranceBox, "学習サンプル軌道が元の軌道から外れてよい最大距離です。小さいほど真の軌道に近いサンプルだけ使います。0にするとほぼ学習軌道を使いません。");
         _toolTip.SetToolTip(_previewPathCountBox, "プレビューで表示するノイズ入り軌道の本数です。多いほど揺れ幅を確認できますが画面は混みます。");
+        _toolTip.SetToolTip(_loopModeBox, "通常再生、指定回数、ショートカット切替、押下中だけ再生から選びます。設定はマクロごとに保存されます。");
+        _toolTip.SetToolTip(_loopCountBox, "指定回数ループで再生する周回数です。");
+        _toolTip.SetToolTip(_loopIntervalBox, "1周の再生が終わってから次の周回を始めるまでの待ち時間です。");
+        _toolTip.SetToolTip(_loopIntervalJitterBox, "ループ間隔に加えるランダムな揺れです。10%なら設定間隔の前後10%で変動します。");
     }
 
     private void RecordButtonOnClick(object? sender, EventArgs e)
@@ -1681,6 +1724,10 @@ public partial class Form1 : Form
                         ? $"マクロ {DateTime.Now:yyyyMMdd HHmmss}"
                         : _nameBox.Text.Trim(),
                     PlaybackSpeedPercent = (int)_playbackSpeedBox.Value,
+                    LoopMode = GetSelectedLoopMode(),
+                    LoopCount = (int)_loopCountBox.Value,
+                    LoopIntervalMs = (int)_loopIntervalBox.Value,
+                    LoopIntervalJitterPercent = (int)_loopIntervalJitterBox.Value,
                     Recording = options,
                     Noise = noise,
                     Events = events
@@ -1707,6 +1754,7 @@ public partial class Form1 : Form
         }
         else if (_player.IsPlaying)
         {
+            _holdMonitor.Stop();
             _player.Stop();
         }
 
@@ -1802,7 +1850,64 @@ public partial class Form1 : Form
             or MacroEventKind.MouseWheel;
     }
 
-    private async Task PlayMacroAsync(Macro macro)
+    private void HandleMacroHotkey(Macro macro)
+    {
+        if (macro.LoopMode == LoopPlaybackMode.ToggleHotkey
+            && _player.IsPlaying
+            && _player.CurrentMacroId == macro.Id
+            && _player.CurrentLoopMode == LoopPlaybackMode.ToggleHotkey)
+        {
+            _holdMonitor.Stop();
+            _player.Stop();
+            SetStatus("ショートカットでループを停止しました。");
+            return;
+        }
+
+        if (_player.IsPlaying)
+        {
+            return;
+        }
+
+        if (macro.LoopMode == LoopPlaybackMode.HoldHotkey)
+        {
+            try
+            {
+                _holdHotkeyReleased = false;
+                _holdMonitor.Start(macro.Hotkey, StopHoldHotkeyLoop);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"押下中ループの監視を開始できません: {ex.Message}");
+                return;
+            }
+        }
+
+        _ = PlayMacroAsync(macro, fromHotkey: true);
+    }
+
+    private void StopHoldHotkeyLoop()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke((Action)StopHoldHotkeyLoop);
+            return;
+        }
+
+        _holdMonitor.Stop();
+        _holdHotkeyReleased = true;
+        if (_player.IsPlaying && _player.CurrentLoopMode == LoopPlaybackMode.HoldHotkey)
+        {
+            _player.Stop();
+            SetStatus("キー解放でループを停止しました。");
+        }
+    }
+
+    private async Task PlayMacroAsync(Macro macro, bool fromHotkey = false)
     {
         if (_recorder.IsRecording || _motionLearningRecorder.IsRecording || IsCountingDown)
         {
@@ -1813,16 +1918,28 @@ public partial class Form1 : Form
         var noise = GetNoiseSettings(macro);
         try
         {
+            if (fromHotkey && macro.LoopMode == LoopPlaybackMode.HoldHotkey && _holdHotkeyReleased)
+            {
+                SetStatus("キー解放でループを停止しました。");
+                return;
+            }
+
             await _player.PlayAsync(
                 macro,
                 noise,
                 macro.PlaybackSpeedPercent,
                 _motionProfile,
                 Screen.FromControl(this),
-                SetStatus);
+                SetStatus,
+                CreatePlaybackLoopOptions(macro, fromHotkey));
         }
         finally
         {
+            if (_player.CurrentMacroId != macro.Id)
+            {
+                _holdMonitor.Stop();
+            }
+
             UpdateButtons();
         }
     }
@@ -1839,6 +1956,7 @@ public partial class Form1 : Form
             (int)_playbackSpeedBox.Maximum);
         SetRecordingControls(macro?.Recording ?? RecordingOptions.Standard());
         SetNoiseControls(macro?.Noise ?? new NoiseSettings());
+        SetLoopControls(macro);
         _updatingSelection = false;
         RefreshSummary(macro);
         UpdateButtons();
@@ -2325,6 +2443,42 @@ public partial class Form1 : Form
         _holdDurationBox.Value = Math.Clamp(recording.HoldDurationMs, (int)_holdDurationBox.Minimum, (int)_holdDurationBox.Maximum);
     }
 
+    private void SetLoopControls(Macro? macro)
+    {
+        var mode = macro?.LoopMode ?? LoopPlaybackMode.None;
+        _loopModeBox.SelectedIndex = mode switch
+        {
+            LoopPlaybackMode.Count => 1,
+            LoopPlaybackMode.ToggleHotkey => 2,
+            LoopPlaybackMode.HoldHotkey => 3,
+            _ => 0
+        };
+        _loopCountBox.Value = Math.Clamp(macro?.LoopCount ?? 2, (int)_loopCountBox.Minimum, (int)_loopCountBox.Maximum);
+        _loopIntervalBox.Value = Math.Clamp(macro?.LoopIntervalMs ?? 0, (int)_loopIntervalBox.Minimum, (int)_loopIntervalBox.Maximum);
+        _loopIntervalJitterBox.Value = Math.Clamp(
+            macro?.LoopIntervalJitterPercent ?? 0,
+            (int)_loopIntervalJitterBox.Minimum,
+            (int)_loopIntervalJitterBox.Maximum);
+        UpdateLoopSettingControlStates();
+    }
+
+    private PlaybackLoopOptions CreatePlaybackLoopOptions(Macro macro, bool fromHotkey)
+    {
+        var mode = macro.LoopMode;
+        if (mode == LoopPlaybackMode.HoldHotkey && !fromHotkey)
+        {
+            mode = LoopPlaybackMode.None;
+        }
+
+        return new PlaybackLoopOptions
+        {
+            Mode = mode,
+            Count = Math.Max(1, macro.LoopCount),
+            IntervalMs = Math.Max(0, macro.LoopIntervalMs),
+            IntervalJitterPercent = Math.Clamp(macro.LoopIntervalJitterPercent, 0, 100)
+        };
+    }
+
     private void RecordingModeOnChanged()
     {
         var fixedIntervalMode = _recordingModeBox.SelectedIndex == 1;
@@ -2367,6 +2521,53 @@ public partial class Form1 : Form
         AutoSaveMacros();
     }
 
+    private void LoopSettingOnChanged(object? sender, EventArgs e)
+    {
+        UpdateLoopSettingControlStates();
+        if (_updatingSelection)
+        {
+            return;
+        }
+
+        var macro = GetSelectedMacro();
+        if (macro is null)
+        {
+            return;
+        }
+
+        macro.LoopMode = GetSelectedLoopMode();
+        macro.LoopCount = (int)_loopCountBox.Value;
+        macro.LoopIntervalMs = (int)_loopIntervalBox.Value;
+        macro.LoopIntervalJitterPercent = (int)_loopIntervalJitterBox.Value;
+        RefreshSummary(macro);
+        AutoSaveMacros();
+    }
+
+    private LoopPlaybackMode GetSelectedLoopMode()
+    {
+        return _loopModeBox.SelectedIndex switch
+        {
+            1 => LoopPlaybackMode.Count,
+            2 => LoopPlaybackMode.ToggleHotkey,
+            3 => LoopPlaybackMode.HoldHotkey,
+            _ => LoopPlaybackMode.None
+        };
+    }
+
+    private void UpdateLoopSettingControlStates()
+    {
+        if (_loopModeBox is null)
+        {
+            return;
+        }
+
+        var mode = GetSelectedLoopMode();
+        _loopCountBox.Enabled = mode == LoopPlaybackMode.Count;
+        var loopIntervalEnabled = mode != LoopPlaybackMode.None;
+        _loopIntervalBox.Enabled = loopIntervalEnabled;
+        _loopIntervalJitterBox.Enabled = loopIntervalEnabled;
+    }
+
     private Macro? GetSelectedMacro()
     {
         if (_macroList.SelectedItems.Count == 0)
@@ -2385,6 +2586,10 @@ public partial class Form1 : Form
             Name = source.Name,
             IsEnabled = source.IsEnabled,
             PlaybackSpeedPercent = source.PlaybackSpeedPercent,
+            LoopMode = source.LoopMode,
+            LoopCount = source.LoopCount,
+            LoopIntervalMs = source.LoopIntervalMs,
+            LoopIntervalJitterPercent = source.LoopIntervalJitterPercent,
             TrimStartMs = source.TrimStartMs,
             TrimEndMs = source.TrimEndMs,
             ScreenshotPath = source.ScreenshotPath,
@@ -2508,7 +2713,19 @@ public partial class Form1 : Form
             $"イベント数: {macro.GetPlaybackEvents().Count} / 元 {macro.Events.Count}\r\n" +
             $"時間: {macro.DurationMs} ms\r\n" +
             $"再生速度: {macro.PlaybackSpeedPercent}%\r\n" +
+            $"ループ: {GetLoopModeText(macro)}\r\n" +
             $"記録方法: {GetRecordingModeText(macro.Recording)}";
+    }
+
+    private static string GetLoopModeText(Macro macro)
+    {
+        return macro.LoopMode switch
+        {
+            LoopPlaybackMode.Count => $"指定回数 / {Math.Max(1, macro.LoopCount)} 回 / 間隔 {Math.Max(0, macro.LoopIntervalMs)} ms ±{Math.Clamp(macro.LoopIntervalJitterPercent, 0, 100)}%",
+            LoopPlaybackMode.ToggleHotkey => $"ショートカット切替 / 間隔 {Math.Max(0, macro.LoopIntervalMs)} ms ±{Math.Clamp(macro.LoopIntervalJitterPercent, 0, 100)}%",
+            LoopPlaybackMode.HoldHotkey => $"押下中 / 間隔 {Math.Max(0, macro.LoopIntervalMs)} ms ±{Math.Clamp(macro.LoopIntervalJitterPercent, 0, 100)}%",
+            _ => "通常再生"
+        };
     }
 
     private static string GetRecordingModeText(RecordingOptions recording)
@@ -2598,6 +2815,11 @@ public partial class Form1 : Form
         _hotkeySetButton.Enabled = selected && !busy;
         _emergencyHotkeySetButton.Enabled = !busy;
         _recordingStopHotkeySetButton.Enabled = !busy;
+        _loopModeBox.Enabled = selected && !busy;
+        _loopCountBox.Enabled = selected && !busy && GetSelectedLoopMode() == LoopPlaybackMode.Count;
+        var loopIntervalEnabled = selected && !busy && GetSelectedLoopMode() != LoopPlaybackMode.None;
+        _loopIntervalBox.Enabled = loopIntervalEnabled;
+        _loopIntervalJitterBox.Enabled = loopIntervalEnabled;
         UpdateMotionLearningMenu();
     }
 
