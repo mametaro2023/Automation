@@ -24,6 +24,7 @@ public partial class Form1 : Form
     private static Color UiSelectionText = Color.White;
 
     private readonly InputRecorder _recorder = new();
+    private readonly InputRecorder _motionLearningRecorder = new();
     private readonly MacroPlayer _player = new();
     private readonly HotkeyManager _hotkeys = new();
     private readonly List<Macro> _macros = new();
@@ -50,6 +51,10 @@ public partial class Form1 : Form
     private ToolStripMenuItem _systemThemeItem = null!;
     private ToolStripMenuItem _lightThemeItem = null!;
     private ToolStripMenuItem _darkThemeItem = null!;
+    private ToolStripMenuItem _learningStartItem = null!;
+    private ToolStripMenuItem _learningStopItem = null!;
+    private ToolStripMenuItem _learningClearItem = null!;
+    private ToolStripMenuItem _learningCountItem = null!;
     private TextBox _nameBox = null!;
     private TextBox _hotkeyBox = null!;
     private TextBox _emergencyHotkeyBox = null!;
@@ -78,6 +83,7 @@ public partial class Form1 : Form
     private RecordingStatusOverlayForm? _recordingOverlay;
     private AppSettings _settings = new();
     private string _macroStorePath = MacroStore.DefaultPath;
+    private HumanMotionProfile _motionProfile = new();
     private AppThemeMode _themeMode;
     private bool _darkThemeActive;
     private CancellationTokenSource? _countdownCts;
@@ -101,6 +107,7 @@ public partial class Form1 : Form
         _settings = AppSettingsStore.Load();
         _themeMode = _settings.ThemeMode;
         _macroStorePath = ResolveMacroStorePath(_settings.MacroFilePath);
+        _motionProfile = HumanMotionStore.Load(_macroStorePath);
         ApplyProcessDarkMode(IsThemeModeDark(_themeMode));
         SystemEvents.UserPreferenceChanged += SystemEventsOnUserPreferenceChanged;
         BuildInterface();
@@ -127,6 +134,11 @@ public partial class Form1 : Form
     {
         SystemEvents.UserPreferenceChanged -= SystemEventsOnUserPreferenceChanged;
         HideRecordingOverlay();
+        if (_motionLearningRecorder.IsRecording)
+        {
+            _motionLearningRecorder.Stop();
+        }
+
         base.OnFormClosed(e);
     }
 
@@ -248,8 +260,25 @@ public partial class Form1 : Form
             _darkThemeItem
         });
         viewMenu.DropDownItems.Add(themeMenu);
+        var learningMenu = new ToolStripMenuItem("学習");
+        _learningStartItem = new ToolStripMenuItem("軌道学習を開始", null, StartMotionLearningOnClick);
+        _learningStopItem = new ToolStripMenuItem("軌道学習を停止", null, StopMotionLearningOnClick);
+        _learningClearItem = new ToolStripMenuItem("学習サンプルを削除", null, ClearMotionLearningOnClick);
+        _learningCountItem = new ToolStripMenuItem("サンプル: 0 件")
+        {
+            Enabled = false
+        };
+        learningMenu.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _learningStartItem,
+            _learningStopItem,
+            new ToolStripSeparator(),
+            _learningClearItem,
+            _learningCountItem
+        });
         _menu.Items.Add(fileMenu);
         _menu.Items.Add(viewMenu);
+        _menu.Items.Add(learningMenu);
         MainMenuStrip = _menu;
         root.Controls.Add(_menu, 0, 0);
 
@@ -1026,7 +1055,7 @@ public partial class Form1 : Form
 
     private async Task StartRecordingWithCountdownAsync()
     {
-        if (_player.IsPlaying || _recorder.IsRecording || IsCountingDown)
+        if (_player.IsPlaying || _recorder.IsRecording || _motionLearningRecorder.IsRecording || IsCountingDown)
         {
             return;
         }
@@ -1125,6 +1154,84 @@ public partial class Form1 : Form
         StopCurrentWork();
     }
 
+    private void StartMotionLearningOnClick(object? sender, EventArgs e)
+    {
+        if (_recorder.IsRecording || _motionLearningRecorder.IsRecording || _player.IsPlaying || IsCountingDown)
+        {
+            return;
+        }
+
+        try
+        {
+            _motionLearningRecorder.ShouldIgnoreMousePoint = null;
+            _motionLearningRecorder.Start(CreateMotionLearningOptions());
+            SetStatus("軌道学習中です。停止すると抽象サンプルとして保存します。");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"軌道学習を開始できません: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "軌道学習", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UpdateButtons();
+        }
+    }
+
+    private void StopMotionLearningOnClick(object? sender, EventArgs e)
+    {
+        StopMotionLearning();
+        UpdateButtons();
+    }
+
+    private void StopMotionLearning()
+    {
+        if (!_motionLearningRecorder.IsRecording)
+        {
+            return;
+        }
+
+        try
+        {
+            var events = _motionLearningRecorder.Stop();
+            var added = HumanMotionProfileBuilder.AddSession(_motionProfile, events);
+            HumanMotionStore.Save(_macroStorePath, _motionProfile);
+            SetStatus(added > 0
+                ? $"軌道学習を保存しました: +{added} 件 / 合計 {_motionProfile.TotalSampleCount} 件"
+                : "軌道学習を停止しました。保存できるサンプルはありませんでした。");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"軌道学習の保存に失敗: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "軌道学習", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ClearMotionLearningOnClick(object? sender, EventArgs e)
+    {
+        if (_motionLearningRecorder.IsRecording)
+        {
+            return;
+        }
+
+        var result = MessageBox.Show(
+            this,
+            "保存済みの軌道学習サンプルをすべて削除しますか？",
+            "軌道学習",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (result != DialogResult.Yes)
+        {
+            return;
+        }
+
+        _motionProfile = new HumanMotionProfile();
+        HumanMotionStore.Save(_macroStorePath, _motionProfile);
+        SetStatus("軌道学習サンプルを削除しました。");
+        UpdateButtons();
+    }
+
     private void EmergencyStopCurrentWork()
     {
         StopCurrentWork();
@@ -1165,20 +1272,20 @@ public partial class Form1 : Form
     private void PreviewButtonOnClick(object? sender, EventArgs e)
     {
         var macro = GetSelectedMacro();
-        if (macro is null || _recorder.IsRecording || _player.IsPlaying || IsCountingDown)
+        if (macro is null || _recorder.IsRecording || _motionLearningRecorder.IsRecording || _player.IsPlaying || IsCountingDown)
         {
             return;
         }
 
         var noise = GetNoiseSettings(macro);
-        using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value, Screen.FromControl(this));
+        using var overlay = new PreviewOverlayForm(macro, noise, (int)_previewPathCountBox.Value, Screen.FromControl(this), _motionProfile);
         overlay.ShowDialog(this);
     }
 
     private void EditButtonOnClick(object? sender, EventArgs e)
     {
         var macro = GetSelectedMacro();
-        if (macro is null || _recorder.IsRecording || _player.IsPlaying || IsCountingDown)
+        if (macro is null || _recorder.IsRecording || _motionLearningRecorder.IsRecording || _player.IsPlaying || IsCountingDown)
         {
             return;
         }
@@ -1585,6 +1692,10 @@ public partial class Form1 : Form
             HideRecordingOverlay();
             RestoreAfterRecording();
         }
+        else if (_motionLearningRecorder.IsRecording)
+        {
+            StopMotionLearning();
+        }
         else if (_player.IsPlaying)
         {
             _player.Stop();
@@ -1684,7 +1795,7 @@ public partial class Form1 : Form
 
     private async Task PlayMacroAsync(Macro macro)
     {
-        if (_recorder.IsRecording || IsCountingDown)
+        if (_recorder.IsRecording || _motionLearningRecorder.IsRecording || IsCountingDown)
         {
             return;
         }
@@ -1697,6 +1808,7 @@ public partial class Form1 : Form
                 macro,
                 noise,
                 macro.PlaybackSpeedPercent,
+                _motionProfile,
                 Screen.FromControl(this),
                 SetStatus);
         }
@@ -2107,7 +2219,9 @@ public partial class Form1 : Form
     {
         _macroStorePath = Path.GetFullPath(path);
         _settings.MacroFilePath = IsDefaultMacroStorePath(_macroStorePath) ? null : _macroStorePath;
+        _motionProfile = HumanMotionStore.Load(_macroStorePath);
         AppSettingsStore.Save(_settings);
+        UpdateMotionLearningMenu();
     }
 
     private static string ResolveMacroStorePath(string? path)
@@ -2149,6 +2263,18 @@ public partial class Form1 : Form
         options.EventIntervalMs = (int)_eventIntervalBox.Value;
         options.HoldDurationMs = (int)Math.Min(_holdDurationBox.Value, _eventIntervalBox.Value);
         return options;
+    }
+
+    private static RecordingOptions CreateMotionLearningOptions()
+    {
+        return new RecordingOptions
+        {
+            Name = "軌道学習",
+            MousePollingRateHz = 200,
+            MoveMinDistancePx = 1,
+            DragMoveMinDistancePx = 1,
+            TimingMode = RecordingTimingMode.Complete
+        };
     }
 
     private NoiseSettings GetNoiseSettings(Macro? macro = null)
@@ -2443,20 +2569,40 @@ public partial class Form1 : Form
     private void UpdateButtons()
     {
         var recording = _recorder.IsRecording;
+        var learning = _motionLearningRecorder.IsRecording;
         var playing = _player.IsPlaying;
         var countingDown = IsCountingDown;
         var selected = GetSelectedMacro() is not null;
 
-        _recordButton.Enabled = !recording && !playing && !countingDown;
-        _stopButton.Enabled = recording || playing || countingDown;
-        _playButton.Enabled = selected && !recording && !playing && !countingDown;
-        _editButton.Enabled = selected && !recording && !playing && !countingDown;
-        _previewButton.Enabled = selected && !recording && !playing && !countingDown;
-        _duplicateButton.Enabled = selected && !recording && !playing && !countingDown;
-        _deleteButton.Enabled = selected && !recording && !playing && !countingDown;
-        _hotkeySetButton.Enabled = selected && !recording && !playing && !countingDown;
-        _emergencyHotkeySetButton.Enabled = !recording && !playing && !countingDown;
-        _recordingStopHotkeySetButton.Enabled = !recording && !playing && !countingDown;
+        var busy = recording || learning || playing || countingDown;
+        _recordButton.Enabled = !busy;
+        _stopButton.Enabled = recording || learning || playing || countingDown;
+        _playButton.Enabled = selected && !busy;
+        _editButton.Enabled = selected && !busy;
+        _previewButton.Enabled = selected && !busy;
+        _duplicateButton.Enabled = selected && !busy;
+        _deleteButton.Enabled = selected && !busy;
+        _hotkeySetButton.Enabled = selected && !busy;
+        _emergencyHotkeySetButton.Enabled = !busy;
+        _recordingStopHotkeySetButton.Enabled = !busy;
+        UpdateMotionLearningMenu();
+    }
+
+    private void UpdateMotionLearningMenu()
+    {
+        if (_learningStartItem is null)
+        {
+            return;
+        }
+
+        var recording = _recorder.IsRecording;
+        var learning = _motionLearningRecorder.IsRecording;
+        var playing = _player.IsPlaying;
+        var countingDown = IsCountingDown;
+        _learningStartItem.Enabled = !recording && !learning && !playing && !countingDown;
+        _learningStopItem.Enabled = learning;
+        _learningClearItem.Enabled = !learning && _motionProfile.TotalSampleCount > 0;
+        _learningCountItem.Text = $"サンプル: {_motionProfile.TotalSampleCount} 件";
     }
 
     private void SetStatus(string message)

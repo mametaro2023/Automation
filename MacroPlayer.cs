@@ -22,6 +22,7 @@ public sealed class MacroPlayer : IDisposable
         Macro macro,
         NoiseSettings noise,
         int speedPercent,
+        HumanMotionProfile? motionProfile = null,
         Screen? playbackScreen = null,
         Action<string>? status = null)
     {
@@ -39,7 +40,7 @@ public sealed class MacroPlayer : IDisposable
         try
         {
             RaiseTimerResolution();
-            var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs);
+            var timeline = BuildTimeline(macro, noise, speedPercent, playbackRate.FrameIntervalMs, motionProfile);
             await Task.Run(() => RunTimeline(timeline, token), token);
         }
         catch (OperationCanceledException)
@@ -61,7 +62,12 @@ public sealed class MacroPlayer : IDisposable
         _cts?.Cancel();
     }
 
-    private List<PlaybackAction> BuildTimeline(Macro macro, NoiseSettings noise, int speedPercent, double frameIntervalMs)
+    private List<PlaybackAction> BuildTimeline(
+        Macro macro,
+        NoiseSettings noise,
+        int speedPercent,
+        double frameIntervalMs,
+        HumanMotionProfile? motionProfile)
     {
         var timedEvents = BuildTimedEvents(macro, noise, speedPercent);
         var actions = new List<PlaybackAction>(timedEvents.Count * 2);
@@ -116,6 +122,7 @@ public sealed class MacroPlayer : IDisposable
                         noise,
                         pressedPositions.Count > 0,
                         frameIntervalMs,
+                        motionProfile,
                         moveSegment.IsStationary,
                         plannedEndPoint);
                     currentRecordedPosition = new Point(segmentEvents[^1].Event.X, segmentEvents[^1].Event.Y);
@@ -145,7 +152,9 @@ public sealed class MacroPlayer : IDisposable
                         previousTimeMs,
                         currentTimeMs,
                         downPoint,
-                        frameIntervalMs);
+                        frameIntervalMs,
+                        motionProfile,
+                        false);
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, downPoint, macroEvent.Button, true));
                     currentPosition = downPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
@@ -173,7 +182,9 @@ public sealed class MacroPlayer : IDisposable
                         previousTimeMs,
                         currentTimeMs,
                         upPoint,
-                        frameIntervalMs);
+                        frameIntervalMs,
+                        motionProfile,
+                        pressedPositions.ContainsKey(macroEvent.Button));
                     actions.Add(PlaybackAction.MouseButton(currentTimeMs, upPoint, macroEvent.Button, false));
                     currentPosition = upPoint;
                     currentRecordedPosition = new Point(macroEvent.X, macroEvent.Y);
@@ -189,7 +200,9 @@ public sealed class MacroPlayer : IDisposable
                         previousTimeMs,
                         currentTimeMs,
                         wheelPoint,
-                        frameIntervalMs);
+                        frameIntervalMs,
+                        motionProfile,
+                        false);
                     actions.Add(PlaybackAction.MouseWheel(currentTimeMs, wheelPoint, macroEvent.WheelDelta));
                     currentPosition = wheelPoint;
                     currentRecordedPosition = wheelPoint;
@@ -251,6 +264,7 @@ public sealed class MacroPlayer : IDisposable
         NoiseSettings noise,
         bool isDragging,
         double frameIntervalMs,
+        HumanMotionProfile? motionProfile,
         bool stationaryRun,
         Point? endPointOverride)
     {
@@ -280,6 +294,25 @@ public sealed class MacroPlayer : IDisposable
         if (endTimeMs <= startTimeMs)
         {
             AddMouseMoveAction(actions, endTimeMs, samples[^1].Point);
+            return samples[^1].Point;
+        }
+
+        if (HumanMotionPathGenerator.TryCreatePath(
+            motionProfile,
+            samples[0].Point,
+            samples[^1].Point,
+            startTimeMs,
+            endTimeMs,
+            frameIntervalMs,
+            isDragging,
+            _random,
+            out var learnedPath))
+        {
+            foreach (var point in learnedPath)
+            {
+                AddMouseMoveAction(actions, point.TimeMs, point.Point);
+            }
+
             return samples[^1].Point;
         }
 
@@ -437,13 +470,15 @@ public sealed class MacroPlayer : IDisposable
         actions.Add(PlaybackAction.MouseMove(timeMs, point));
     }
 
-    private static Point AddMouseTransition(
+    private Point AddMouseTransition(
         List<PlaybackAction> actions,
         Point start,
         double startTimeMs,
         double endTimeMs,
         Point end,
-        double frameIntervalMs)
+        double frameIntervalMs,
+        HumanMotionProfile? motionProfile,
+        bool isDragging)
     {
         if (start == end)
         {
@@ -453,6 +488,25 @@ public sealed class MacroPlayer : IDisposable
         if (endTimeMs <= startTimeMs)
         {
             return start;
+        }
+
+        if (HumanMotionPathGenerator.TryCreatePath(
+            motionProfile,
+            start,
+            end,
+            startTimeMs,
+            endTimeMs,
+            frameIntervalMs,
+            isDragging,
+            _random,
+            out var learnedPath))
+        {
+            foreach (var point in learnedPath)
+            {
+                AddMouseMoveAction(actions, point.TimeMs, point.Point);
+            }
+
+            return end;
         }
 
         var nextFrame = Math.Ceiling((startTimeMs + 0.001) / frameIntervalMs) * frameIntervalMs;

@@ -42,7 +42,11 @@ public static class MacroPreviewBuilder
     private const long StationaryMinDurationMs = 10;
     private const int StationaryMinSamples = 3;
 
-    public static MacroPreview Build(Macro macro, NoiseSettings noise, int variantCount)
+    public static MacroPreview Build(
+        Macro macro,
+        NoiseSettings noise,
+        int variantCount,
+        HumanMotionProfile? motionProfile = null)
     {
         var preview = new MacroPreview();
         var events = macro.GetPlaybackEvents();
@@ -68,7 +72,7 @@ public static class MacroPreviewBuilder
         var baseSeed = Environment.TickCount ^ macro.Id.GetHashCode();
         for (var i = 0; i < count; i++)
         {
-            BuildNoisyVariant(preview, events, noise, new Random(baseSeed + i * 7919));
+            BuildNoisyVariant(preview, events, noise, motionProfile, new Random(baseSeed + i * 7919));
         }
 
         return preview;
@@ -78,6 +82,7 @@ public static class MacroPreviewBuilder
         MacroPreview preview,
         List<MacroEvent> events,
         NoiseSettings noise,
+        HumanMotionProfile? motionProfile,
         Random random)
     {
         var noisyPath = new List<Point>();
@@ -108,6 +113,8 @@ public static class MacroPreviewBuilder
                 ref recordedAnchor,
                 ref hasRecordedAnchor,
                 noise,
+                motionProfile,
+                pressedPositions.Count > 0,
                 random);
             if (flushResult.HadMovement)
             {
@@ -141,6 +148,8 @@ public static class MacroPreviewBuilder
             ref recordedAnchor,
             ref hasRecordedAnchor,
             noise,
+            motionProfile,
+            pressedPositions.Count > 0,
             random);
         preview.NoisyPaths.Add(noisyPath);
         preview.NoisyTimedPaths.Add(noisyTimedPath);
@@ -156,6 +165,8 @@ public static class MacroPreviewBuilder
         ref Point recordedAnchor,
         ref bool hasRecordedAnchor,
         NoiseSettings noise,
+        HumanMotionProfile? motionProfile,
+        bool isDragging,
         Random random)
     {
         if (segment.Count == 0)
@@ -185,7 +196,7 @@ public static class MacroPreviewBuilder
                 continue;
             }
 
-            DrawMovingSegment(noisyPath, noisyTimedPath, moveSegment.Events, ref anchor, ref hasAnchor, noise, random);
+            DrawMovingSegment(noisyPath, noisyTimedPath, moveSegment.Events, ref anchor, ref hasAnchor, noise, motionProfile, isDragging, random);
             recordedAnchor = new Point(moveSegment.Events[^1].X, moveSegment.Events[^1].Y);
             hasRecordedAnchor = true;
             trailingStationary = false;
@@ -202,10 +213,34 @@ public static class MacroPreviewBuilder
         ref Point anchor,
         ref bool hasAnchor,
         NoiseSettings noise,
+        HumanMotionProfile? motionProfile,
+        bool isDragging,
         Random random)
     {
         var start = hasAnchor ? anchor : new Point(segment[0].X, segment[0].Y);
         var end = new Point(segment[^1].X, segment[^1].Y);
+        if (HumanMotionPathGenerator.TryCreatePath(
+            motionProfile,
+            start,
+            end,
+            segment[0].TimeOffsetMs,
+            segment[^1].TimeOffsetMs,
+            8.0,
+            isDragging,
+            random,
+            out var learnedPath))
+        {
+            foreach (var point in learnedPath)
+            {
+                noisyPath.Add(point.Point);
+                noisyTimedPath.Add(new TimedPreviewPoint((long)Math.Round(point.TimeMs), point.Point));
+            }
+
+            anchor = end;
+            hasAnchor = true;
+            return;
+        }
+
         var dx = end.X - start.X;
         var dy = end.Y - start.Y;
         var length = Math.Sqrt(dx * dx + dy * dy);
@@ -526,9 +561,14 @@ public sealed class PreviewOverlayForm : Form
     private long _seekTargetMs;
     private long _lastSoundTimeMs;
 
-    public PreviewOverlayForm(Macro macro, NoiseSettings noise, int variantCount, Screen transportScreen)
+    public PreviewOverlayForm(
+        Macro macro,
+        NoiseSettings noise,
+        int variantCount,
+        Screen transportScreen,
+        HumanMotionProfile? motionProfile = null)
     {
-        _preview = MacroPreviewBuilder.Build(macro, noise, variantCount);
+        _preview = MacroPreviewBuilder.Build(macro, noise, variantCount, motionProfile);
         _virtualBounds = GetVirtualBounds();
         _transportBounds = transportScreen.WorkingArea;
 

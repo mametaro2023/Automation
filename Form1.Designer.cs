@@ -20,6 +20,7 @@ partial class Form1
         if (disposing)
         {
             _recorder.Dispose();
+            _motionLearningRecorder.Dispose();
             _player.Dispose();
             _hotkeys.Dispose();
         }
